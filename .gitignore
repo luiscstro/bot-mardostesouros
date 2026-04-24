@@ -1,0 +1,8 @@
+# Ignorar senhas e credenciais
+.env
+bot-discord-470223-41527625dc96.json
+mensagens.json
+
+# Ignorar o ambiente virtual e caches do Python
+.venv/
+__pycache__/
