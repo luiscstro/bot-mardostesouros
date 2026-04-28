@@ -281,6 +281,7 @@ class EstoqueCog(commands.Cog):
 
 # --- SISTEMA DE LOJA E SAVE ---
 msg_ids = {"C": None, "B": None, "A": None}
+history = {"C": [], "B": [], "A": []} # NOVA MEMÓRIA DO BOT
 announce_on = True
 
 def save():
@@ -288,7 +289,8 @@ def save():
         "C": msg_ids["C"],
         "B": msg_ids["B"],
         "A": msg_ids["A"],
-        "announce_enabled": announce_on
+        "announce_enabled": announce_on,
+        "history": history # SALVA O HISTÓRICO NO JSON
     }
     try:
         with open(ARQUIVO_MSGS, "w") as f: 
@@ -297,7 +299,7 @@ def save():
         print(f"Erro ao salvar JSON: {e}")
 
 def load():
-    global msg_ids, announce_on
+    global msg_ids, announce_on, history
     if os.path.exists(ARQUIVO_MSGS):
         try:
             with open(ARQUIVO_MSGS, "r") as f:
@@ -306,12 +308,40 @@ def load():
                 msg_ids["B"] = d.get("B")
                 msg_ids["A"] = d.get("A")
                 announce_on = d.get("announce_enabled", True)
+                # Se não existir histórico antigo, cria um vazio
+                history = d.get("history", {"C": [], "B": [], "A": []}) 
         except Exception as e: 
             print(f"Erro ao carregar JSON: {e}")
 
 def is_staff(ctx):
     if not ctx.author.roles: return False
     return any(r.id in CARGOS_PERMITIDOS for r in ctx.author.roles)
+
+# --- NOVA FUNÇÃO DE SORTEIO COM MEMÓRIA ---
+def sortear_com_historico(rank, lista_disponiveis):
+    global history
+    if not lista_disponiveis:
+        return "Esgotado"
+
+    # Filtra a lista: tira as frutas que já estão no histórico recente
+    lista_filtrada = [f for f in lista_disponiveis if f not in history[rank]]
+
+    # Se a lista filtrada ficar vazia (ex: tem pouquíssimas frutas no rank),
+    # ele ignora o histórico para não bugar e sorteia da lista normal
+    if not lista_filtrada:
+        escolhida = random.choice(lista_disponiveis)
+    else:
+        escolhida = random.choice(lista_filtrada)
+
+    # Adiciona a nova escolhida na memória
+    history[rank].append(escolhida)
+    
+    # LIMITADOR: Lembra apenas das últimas 3 frutas de cada rank
+    if len(history[rank]) > 3:
+        history[rank].pop(0) # Apaga a mais antiga da memória
+
+    return escolhida
+# ------------------------------------------
 
 def get_msg_content(rank, nome):
     config = {
@@ -363,7 +393,8 @@ async def run_update():
         sorteadas = {}
         for r in ["C", "B", "A"]:
             lista = await cog.disponiveis(r)
-            sorteadas[r] = random.choice(lista) if lista else "Esgotado"
+            # AQUI: Usa a nova função em vez de um random puro
+            sorteadas[r] = sortear_com_historico(r, lista) 
             
             ch = bot.get_channel(canais[r])
             if not ch: 
@@ -386,7 +417,9 @@ async def run_update():
             if not msg_resolvida:
                 msg = await ch.send(txt)
                 msg_ids[r] = msg.id
-                save() 
+                
+            save() # Salva a nova mensagem E O HISTÓRICO NOVO
+            if not msg_resolvida:
                 print(f"✅ Nova mensagem criada Loja {r} (ID: {msg.id}).")
         
         print(f"✅ Atualização concluída: {sorteadas}")
@@ -436,12 +469,14 @@ async def reroll(ctx, rank: str, *, fruta: str = None):
     if rank not in ["C", "B", "A"]: return
     
     cog = bot.get_cog("EstoqueCog")
+    load() # Puxa o histórico antes de rodar
+    
     if not fruta:
         opts = await cog.disponiveis(rank)
         if not opts: return await ctx.send("Sem frutas.")
-        fruta = random.choice(opts)
+        # AQUI: Usa a função inteligente
+        fruta = sortear_com_historico(rank, opts) 
     
-    load()
     ch = bot.get_channel({"C": ID_CANAL_C, "B": ID_CANAL_B, "A": ID_CANAL_A}[rank])
     txt = get_msg_content(rank, fruta)
     msg_resolvida = False
@@ -457,9 +492,64 @@ async def reroll(ctx, rank: str, *, fruta: str = None):
     if not msg_resolvida:
         m = await ch.send(txt)
         msg_ids[rank] = m.id
-        save()
-    
+        
+    save() # Salva o histórico com a fruta rerolada
     await ctx.message.add_reaction("✅")
+
+@bot.command(name="simular")
+@commands.check(is_staff)
+async def simular(ctx):
+    """
+    Simula uma atualização de mercado mostrando o resultado no canal atual,
+    sem alterar os canais oficiais e sem salvar no histórico.
+    """
+    await ctx.send("🔍 **Simulando a virada do Mercado Negro... Aguarde.**")
+    
+    cog = bot.get_cog("EstoqueCog")
+    if not cog:
+        return await ctx.send("❌ Erro: Planilha não conectada.")
+        
+    load() # Puxa o histórico atual para basear o sorteio
+
+    # Fazemos uma CÓPIA do histórico para não sujar a memória real do bot
+    temp_history = {
+        "C": list(history.get("C", [])),
+        "B": list(history.get("B", [])),
+        "A": list(history.get("A", []))
+    }
+
+    sorteadas = {}
+    
+    try:
+        async with ctx.typing():
+            for r in ["C", "B", "A"]:
+                lista_disponiveis = await cog.disponiveis(r)
+                
+                if not lista_disponiveis:
+                    escolhida = "Esgotado"
+                else:
+                    # Filtra a lista com base no histórico TEMPORÁRIO
+                    lista_filtrada = [f for f in lista_disponiveis if f not in temp_history[r]]
+                    
+                    if not lista_filtrada:
+                        escolhida = random.choice(lista_disponiveis)
+                    else:
+                        escolhida = random.choice(lista_filtrada)
+                
+                sorteadas[r] = escolhida
+                
+                # Pega o texto formatado do painel
+                txt = get_msg_content(r, escolhida)
+                
+                # Envia no canal que você usou o comando (não no oficial)
+                await ctx.send(f"**[SIMULAÇÃO - RANK {r}]**\n{txt}")
+
+        # Aviso final
+        resumo = f"✅ **Simulação Concluída!**\nFrutas sorteadas: `C: {sorteadas['C']} | B: {sorteadas['B']} | A: {sorteadas['A']}`\n*(O mercado oficial não foi alterado e o histórico não foi modificado).* "
+        await ctx.send(resumo)
+        
+    except Exception as e:
+        await ctx.send(f"❌ Erro crítico na simulação: {e}")
 
 @bot.command(name="limpar")
 @commands.check(is_staff)
