@@ -27,7 +27,7 @@ ARQUIVO_MSGS = "mensagens.json"
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
-CARGOS_PERMITIDOS = [1227977596671885393, 1222232432527413389, 1415428289954054234, 1405643389105606767]
+CARGOS_PERMITIDOS = [1227977596671885393, 1222232432527413389, 1415428289954054234, 1405643389105606767, 1475504976037154959]
 
 # --- BOT SETUP ---
 intents = discord.Intents.default()
@@ -690,6 +690,156 @@ async def setup_hook():
     # 4. Inicia a rotina semanal de atualização
     if not auto_update.is_running(): 
         auto_update.start()
+
+# --- FUNÇÃO PARA O BOT ESCREVER NO EXCEL ---
+async def atualizar_planilha_status(ctx, busca_fruta, novo_status):
+    cog = ctx.bot.get_cog("EstoqueCog")
+    if not cog or not cog.sheet:
+        await ctx.send("❌ Erro: Planilha não conectada.")
+        return None
+        
+    fs = await cog.get_frutas()
+    b = busca_fruta.lower().replace(" ", "")
+    achou = next((f for f in fs if b in f['nome'].lower().replace(" ", "") or b == f['numero'] or b == f"{f['rank'].lower()}{f['numero']}"), None)
+
+    if not achou:
+        await ctx.send(f"❌ Não achei nenhuma fruta com `{busca_fruta}`.")
+        return None
+
+    def do_update():
+        data = cog.sheet.get_all_values()
+        idx_head = 0
+        for i, r in enumerate(data):
+            if "rank" in [str(c).lower() for c in r] and "nome" in [str(c).lower() for c in r]:
+                idx_head = i
+                break
+        head = [h.lower().strip() for h in data[idx_head]]
+        i_nome = head.index("nome") if "nome" in head else 2
+        i_stat = head.index("status") if "status" in head else 4
+
+        # Acha a linha certa e escreve nela!
+        for i, r in enumerate(data):
+            if i <= idx_head: continue
+            if len(r) > i_nome and r[i_nome].strip() == achou['nome']:
+                cog.sheet.update_cell(i + 1, i_stat + 1, novo_status)
+                return achou['nome']
+        return None
+
+    # Envia a ordem pro Excel rodar nos bastidores (para não travar o bot)
+    nome_exato = await asyncio.to_thread(do_update)
+    return nome_exato
+
+
+# 1️⃣ COMANDO: POSSE DE BANDO (Staff)
+@bot.command(name="posse")
+@commands.check(is_staff)
+async def posse(ctx, *, texto: str):
+    """Define que a fruta está guardada no navio/cofre de um bando."""
+    if "," not in texto:
+        return await ctx.send("⚠️ Use a vírgula para separar a fruta do bando!\nExemplo: `doffy!posse Mera Mera, Piratas do Sol`")
+        
+    busca_fruta, bando = texto.split(",", 1)
+    busca_fruta = busca_fruta.strip()
+    bando = bando.strip()
+    
+    # Monta a frase exata que vai pro Excel
+    novo_status = f"Em posse do bando {bando}"
+    
+    msg = await ctx.send(f"⏳ Registrando a posse da fruta `{busca_fruta}`... Aguarde.")
+    
+    nome_fruta = await atualizar_planilha_status(ctx, busca_fruta, novo_status)
+    if nome_fruta:
+        await msg.edit(content=f"📦 Sucesso! A **{nome_fruta}** agora está trancada no cofre. Excel atualizado: `{novo_status}`")
+    else:
+        await msg.edit(content="❌ Falha ao atualizar a planilha.")
+
+
+# 2️⃣ COMANDO: INGERIR A FRUTA (Aprovação da Staff)
+@bot.command(name="ingerir")
+async def ingerir(ctx, *, busca_fruta: str):
+    """Pede permissão para ingerir a fruta. Requer confirmação da Staff."""
+    
+    # Pega o nick atual do jogador
+    nick_jogador = ctx.author.display_name
+    
+    # Envia a mensagem de aguardo e adiciona a reação
+    msg = await ctx.send(
+        f"⏳ O jogador {ctx.author.mention} quer ingerir a fruta `{busca_fruta}`.\n\n"
+        f"⚠️ **Aguardando um membro da Staff aprovar reagindo com ✅ nesta mensagem...**"
+    )
+    await msg.add_reaction("✅")
+    
+    # Função de segurança que checa quem está reagindo
+    def check(reaction, user):
+        # Ignora o próprio bot e reações em outras mensagens
+        if user == bot.user or reaction.message.id != msg.id or str(reaction.emoji) != "✅":
+            return False
+        
+        # Verifica se o usuário que clicou tem algum dos cargos permitidos
+        cargos_usuario = getattr(user, 'roles', [])
+        return any(r.id in CARGOS_PERMITIDOS for r in cargos_usuario)
+
+    try:
+        # O bot vai esperar por até 1 hora (3600 segundos) pela reação de um Staff
+        reaction, staff_user = await bot.wait_for('reaction_add', timeout=3600.0, check=check)
+        
+        # Se o código chegou aqui, um Staff clicou no ✅!
+        await msg.edit(content=f"🔄 Aprovação recebida de {staff_user.mention}! Atualizando o Excel...")
+        
+        # Vai lá no Excel e altera de verdade
+        novo_status = f"Ingerida por {nick_jogador}"
+        nome_fruta = await atualizar_planilha_status(ctx, busca_fruta, novo_status)
+        
+        if nome_fruta:
+            await msg.edit(content=f"🍎 **Gulp!** {ctx.author.mention} comeu a **{nome_fruta}**! (Aprovado por {staff_user.mention})\nO Excel foi atualizado para: `{novo_status}`")
+            await msg.clear_reactions() # Limpa as reações para ficar bonito
+        else:
+            await msg.edit(content="❌ Não consegui encontrar essa fruta ou houve um erro na planilha.")
+            await msg.clear_reactions()
+            
+    except asyncio.TimeoutError:
+        # Se passar 1 hora e nenhum Staff aprovar, o pedido expira
+        await msg.edit(content=f"⌛ O pedido de {ctx.author.mention} para ingerir a `{busca_fruta}` expirou porque nenhum Staff aprovou a tempo.")
+        try:
+            await msg.clear_reactions()
+        except:
+            pass
+
+# 3️⃣ COMANDO: LIBERAR A FRUTA (TIRAR O DONO)
+@bot.command(name="cuspir")
+@commands.check(is_staff)
+async def cuspir(ctx, *, busca_fruta: str):
+    """Remove o dono da fruta na planilha (deixa o status vazio para voltar ao mercado)."""
+    msg = await ctx.send(f"⏳ Fazendo alguém cuspir a `{busca_fruta}` e limpando a planilha... Aguarde.")
+    
+    # Mandamos o Excel colocar um texto vazio ("") para ela voltar pros sorteios
+    nome_fruta = await atualizar_planilha_status(ctx, busca_fruta, "")
+    if nome_fruta:
+        await msg.edit(content=f"🤮 **Bleargh!** Planilha atualizada! A **{nome_fruta}** foi cuspida e agora está solta pelo mundo de novo.")
+    else:
+        await msg.edit(content="❌ Falha ao atualizar a planilha. Será que ela desceu pelo buraco errado?")
+
+# 4️⃣ COMANDO: VER O HISTÓRICO DAS ÚLTIMAS FRUTAS
+@bot.command(name="historico")
+@commands.check(is_staff)
+async def historico_frutas(ctx):
+    """Mostra o histórico das últimas 3 frutas sorteadas que não podem sair de novo."""
+    load() # Garante que puxou o histórico mais recente da memória
+    
+    emb = discord.Embed(
+        title="📜 Memória do Mercado Negro", 
+        description="Estas são as últimas frutas que saíram nas lojas e que **o Doflamingo está proibido de sortear de novo** agora.", 
+        color=0x2B2D31
+    )
+    
+    for r in ["C", "B", "A"]:
+        lista = history.get(r, [])
+        if lista:
+            emb.add_field(name=f"Rank {r}", value="\n".join([f"• {f}" for f in lista]), inline=False)
+        else:
+            emb.add_field(name=f"Rank {r}", value="*Nenhuma fruta na memória ainda.*", inline=False)
+            
+    await ctx.send(embed=emb)
 
 # Anexa a configuração segura ao bot
 bot.setup_hook = setup_hook
