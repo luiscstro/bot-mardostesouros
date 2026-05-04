@@ -632,13 +632,37 @@ async def reenviar(ctx, link_msg: str, link_canal: str):
 async def ajuda(ctx):
     embed = discord.Embed(
         title="🧶 Guia do Doflamingo",
-        description="Lista de comandos disponíveis.",
+        description="Lista de todas as mercadorias e comandos disponíveis.",
         color=discord.Color.dark_purple()
     )
-    embed.add_field(name="📖 Público", value="`doffy!enc [busca]` → Vê todas as frutas.\n`doffy!fruta <nome>` → Detalhes de uma fruta.\n`doffy!proxima` → Tempo para atualização.", inline=False)
     
+    # Texto dos comandos públicos
+    publicos = (
+        "`doffy!enc [busca]` → Vê todas as frutas.\n"
+        "`doffy!fruta <nome>` → Detalhes de uma fruta.\n"
+        "`doffy!proxima` → Tempo para a próxima atualização.\n"
+        "`doffy!ingerir <nome>` → Pede para comer uma fruta (Exige aprovação Staff)."
+    )
+    embed.add_field(name="📖 Público", value=publicos, inline=False)
+    
+    # Texto dos comandos da Staff
     if is_staff(ctx):
-        embed.add_field(name="🔒 Staff", value="`doffy!forcarteste` → Força atualização.\n`doffy!reroll <rank>` → Rerrola mercado.\n`doffy!anuncio on/off` → Liga/Desliga anúncio.\n `doffy!limpar X` → Limpa mensagens. \n `doffy!editar <link>` → Edita uma mensagem do bot.\n `doffy!reenviar <link> <canal>` → Copia e cola mensagens.", inline=False)
+        staff = (
+            "**Mercado & Testes:**\n"
+            "`doffy!forcarteste` → Força a atualização do mercado.\n"
+            "`doffy!simular` → Simula o mercado no chat atual sem salvar.\n"
+            "`doffy!reroll <rank>` → Gira os dados e troca a fruta daquele rank.\n"
+            "`doffy!historico` → Vê as últimas frutas sorteadas (memória).\n\n"
+            "**Controle do Excel:**\n"
+            "`doffy!posse <fruta>, <bando>` → Guarda a fruta com um bando.\n"
+            "`doffy!cuspir <fruta>` → Limpa o dono e devolve a fruta ao mercado.\n\n"
+            "**Administração:**\n"
+            "`doffy!anuncio on/off` → Liga ou desliga as notificações globais.\n"
+            "`doffy!limpar X` → Apaga X mensagens do chat atual.\n"
+            "`doffy!editar <link>` → Altera o texto de uma mensagem do bot.\n"
+            "`doffy!reenviar <link> <canal>` → Copia e cola mensagens."
+        )
+        embed.add_field(name="🔒 Staff", value=staff, inline=False)
     
     await ctx.send(embed=embed)
 
