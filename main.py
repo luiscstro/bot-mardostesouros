@@ -638,10 +638,10 @@ async def ajuda(ctx):
     
     # Texto dos comandos públicos
     publicos = (
-        "`doffy!enc [busca]` → Vê todas as frutas.\n"
+        "`doffy!enc` → Vê todas as frutas.\n"
         "`doffy!fruta <nome>` → Detalhes de uma fruta.\n"
         "`doffy!proxima` → Tempo para a próxima atualização.\n"
-        "`doffy!ingerir <nome>` → Pede para comer uma fruta (Exige aprovação Staff)."
+        "`doffy!ingerir <fruta>` → Pede para comer uma fruta (Exige aprovação Staff)."
     )
     embed.add_field(name="📖 Público", value=publicos, inline=False)
     
