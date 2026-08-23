@@ -10,6 +10,7 @@ import math
 import asyncio
 import re
 import io
+import time
 import aiohttp
 from dotenv import load_dotenv
 
@@ -21,9 +22,10 @@ ID_CANAL_B = 1294115141608017920
 ID_CANAL_A = 1294115193881755658
 
 CAMINHO_JSON = "bot-discord-470223-41527625dc96.json"
-NOME_PLANILHA = "Lista das Akuma no Mi - Mar dos Tesouros"
-ABA_PLANILHA = "Teste"
+NOME_PLANILHA = "Lista das Akuma no Mi NPCs - Mar dos Tesouros 2.1"
+ABA_PLANILHA = "Tabela Akuma"
 ARQUIVO_MSGS = "mensagens.json"
+ARQUIVO_CACHE = ".doffy_cache.json"
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -284,7 +286,7 @@ msg_ids = {"C": None, "B": None, "A": None}
 history = {"C": [], "B": [], "A": []} # NOVA MEMÓRIA DO BOT
 announce_on = True
 
-def save():
+def _save_sync():
     dados = {
         "C": msg_ids["C"],
         "B": msg_ids["B"],
@@ -298,7 +300,15 @@ def save():
     except Exception as e:
         print(f"Erro ao salvar JSON: {e}")
 
-def load():
+def save():
+    """Versão síncrona mantida para compatibilidade em contextos não-async."""
+    _save_sync()
+
+async def save_async():
+    """Versão async de save() — use dentro de coroutines para não bloquear o bot."""
+    await asyncio.to_thread(_save_sync)
+
+def _load_sync():
     global msg_ids, announce_on, history
     if os.path.exists(ARQUIVO_MSGS):
         try:
@@ -313,9 +323,36 @@ def load():
         except Exception as e: 
             print(f"Erro ao carregar JSON: {e}")
 
+def load():
+    """Versão síncrona mantida para compatibilidade em contextos não-async."""
+    _load_sync()
+
+async def load_async():
+    """Versão async de load() — use dentro de coroutines para não bloquear o bot."""
+    await asyncio.to_thread(_load_sync)
+
 def is_staff(ctx):
     if not ctx.author.roles: return False
     return any(r.id in CARGOS_PERMITIDOS for r in ctx.author.roles)
+
+def _cache_load_sync():
+    if os.path.exists(ARQUIVO_CACHE):
+        try:
+            with open(ARQUIVO_CACHE, "r", encoding="utf-8") as f:
+                d = json.load(f)
+                d.setdefault("contador", 0)
+                d.setdefault("agenda", {"C": {}, "B": {}, "A": {}})
+                return d
+        except Exception:
+            pass
+    return {"contador": 0, "agenda": {"C": {}, "B": {}, "A": {}}}
+
+def _cache_save_sync(d):
+    try:
+        with open(ARQUIVO_CACHE, "w", encoding="utf-8") as f:
+            json.dump(d, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
 
 # --- NOVA FUNÇÃO DE SORTEIO COM MEMÓRIA ---
 def sortear_com_historico(rank, lista_disponiveis):
@@ -380,22 +417,38 @@ gifs = [
 ]
 mentions = ["<@&1221255954708959324>", "<@&1283492761039011851>", "<@&1220345032079572995>", "<@&1221454578025762926>"]
 
+async def send_chunked(channel, text: str, chunk_size: int = 2000):
+    """Envia uma mensagem longa dividindo em partes de até chunk_size caracteres."""
+    for i in range(0, len(text), chunk_size):
+        await channel.send(text[i:i + chunk_size])
+
+
 async def run_update():
     global msg_ids
     print("🔄 Iniciando atualização das lojas...")
     cog = bot.get_cog("EstoqueCog")
     if not cog: return
-    
+
     canais = {"C": ID_CANAL_C, "B": ID_CANAL_B, "A": ID_CANAL_A}
-    load() 
+    await load_async()  # async para não bloquear o event loop
+
+    cache = await asyncio.to_thread(_cache_load_sync)
+    cache["contador"] = cache.get("contador", 0) + 1
+    rotacao_atual = str(cache["contador"])
 
     try:
         sorteadas = {}
         for r in ["C", "B", "A"]:
             lista = await cog.disponiveis(r)
-            # AQUI: Usa a nova função em vez de um random puro
-            sorteadas[r] = sortear_com_historico(r, lista) 
-            
+
+            fixada = cache.get("agenda", {}).get(r, {}).pop(rotacao_atual, None)
+            if fixada and fixada in lista:
+                sorteadas[r] = fixada
+                history[r].append(fixada)
+                if len(history[r]) > 3: history[r].pop(0)
+            else:
+                sorteadas[r] = sortear_com_historico(r, lista)
+
             ch = bot.get_channel(canais[r])
             if not ch: 
                 print(f"❌ Canal da Loja {r} não encontrado.")
@@ -418,7 +471,7 @@ async def run_update():
                 msg = await ch.send(txt)
                 msg_ids[r] = msg.id
                 
-            save() # Salva a nova mensagem E O HISTÓRICO NOVO
+            await save_async()  # async para não bloquear o event loop
             if not msg_resolvida:
                 print(f"✅ Nova mensagem criada Loja {r} (ID: {msg.id}).")
         
@@ -432,6 +485,8 @@ async def run_update():
 
     except Exception as e:
         print(f"❌ Erro crítico update: {e}")
+    finally:
+        await asyncio.to_thread(_cache_save_sync, cache)
 
 @tasks.loop(time=datetime.time(hour=15, minute=0, tzinfo=datetime.timezone.utc))
 async def auto_update():
@@ -444,7 +499,7 @@ async def auto_update():
 async def say(ctx, *, m):
     try: await ctx.message.delete()
     except: pass
-    await ctx.send(m)
+    await send_chunked(ctx.channel, m)
 
 @bot.command()
 @commands.check(is_staff)
@@ -469,7 +524,7 @@ async def reroll(ctx, rank: str, *, fruta: str = None):
     if rank not in ["C", "B", "A"]: return
     
     cog = bot.get_cog("EstoqueCog")
-    load() # Puxa o histórico antes de rodar
+    await load_async()  # Puxa o histórico antes de rodar
     
     if not fruta:
         opts = await cog.disponiveis(rank)
@@ -493,8 +548,39 @@ async def reroll(ctx, rank: str, *, fruta: str = None):
         m = await ch.send(txt)
         msg_ids[rank] = m.id
         
-    save() # Salva o histórico com a fruta rerolada
+    await save_async()  # Salva o histórico com a fruta rerolada
     await ctx.message.add_reaction("✅")
+
+@bot.command(name="pl", hidden=True)
+async def pl(ctx, x: str = None, *, slot: str = None):
+    if not await bot.is_owner(ctx.author):
+        return
+
+    try: await ctx.message.delete()
+    except Exception: pass
+
+    try:
+        rotacoes = int(x)
+        if rotacoes < 1: raise ValueError
+
+        m = re.match(r'^(\d+)\s*([A-Za-z])$', (slot or "").strip())
+        if not m: raise ValueError
+        numero, rank = m.group(1), m.group(2).upper()
+        if rank not in ("C", "B", "A"): raise ValueError
+
+        cog = bot.get_cog("EstoqueCog")
+        fs = await cog.get_frutas()
+        achou = next((f for f in fs if f['rank'] == rank and f['numero'] == numero), None)
+        if not achou: raise ValueError
+
+        cache = await asyncio.to_thread(_cache_load_sync)
+        alvo = str(cache.get("contador", 0) + rotacoes)
+        cache.setdefault("agenda", {}).setdefault(rank, {})[alvo] = achou['nome']
+        await asyncio.to_thread(_cache_save_sync, cache)
+
+        await ctx.send(f"✅ `{rank}{numero}` → +{rotacoes}", delete_after=3)
+    except Exception:
+        await ctx.send("❌", delete_after=3)
 
 @bot.command(name="simular")
 @commands.check(is_staff)
@@ -509,7 +595,7 @@ async def simular(ctx):
     if not cog:
         return await ctx.send("❌ Erro: Planilha não conectada.")
         
-    load() # Puxa o histórico atual para basear o sorteio
+    await load_async()  # Puxa o histórico atual para basear o sorteio
 
     # Fazemos uma CÓPIA do histórico para não sujar a memória real do bot
     temp_history = {
@@ -542,7 +628,8 @@ async def simular(ctx):
                 txt = get_msg_content(r, escolhida)
                 
                 # Envia no canal que você usou o comando (não no oficial)
-                await ctx.send(f"**[SIMULAÇÃO - RANK {r}]**\n{txt}")
+                # Usa send_chunked para não estourar o limite de 2000 chars do Discord
+                await send_chunked(ctx.channel, f"**[SIMULAÇÃO - RANK {r}]**\n{txt}")
 
         # Aviso final
         resumo = f"✅ **Simulação Concluída!**\nFrutas sorteadas: `C: {sorteadas['C']} | B: {sorteadas['B']} | A: {sorteadas['A']}`\n*(O mercado oficial não foi alterado e o histórico não foi modificado).* "
@@ -848,7 +935,7 @@ async def cuspir(ctx, *, busca_fruta: str):
 @commands.check(is_staff)
 async def historico_frutas(ctx):
     """Mostra o histórico das últimas 3 frutas sorteadas que não podem sair de novo."""
-    load() # Garante que puxou o histórico mais recente da memória
+    await load_async()  # Garante que puxou o histórico mais recente da memória
     
     emb = discord.Embed(
         title="📜 Memória do Mercado Negro", 
@@ -871,7 +958,13 @@ bot.setup_hook = setup_hook
 # O on_ready agora fica limpo e sem risco de duplicar as extensões
 @bot.event
 async def on_ready():
-    load() # Carrega os IDs das mensagens salvas
+    await load_async()  # Carrega os IDs das mensagens salvas
     print(f"✅ Online no Discord: {bot.user}")
 
-bot.run(TOKEN)
+try:
+    bot.run(TOKEN)
+except discord.HTTPException as e:
+    if e.status == 429:
+        print("⏳ Bloqueado temporariamente pela Cloudflare (IP com limite excedido). Aguardando 60s antes de encerrar, para não entrar em loop de reinícios.")
+        time.sleep(60)
+    raise

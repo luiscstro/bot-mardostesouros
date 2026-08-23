@@ -16,6 +16,11 @@ ROLE_STAFF_IDS = [
 ]
 # =================================================
 
+# Trava em memória contra cliques duplicados/simultâneos (race condition).
+# Precisa ser marcado ANTES de qualquer "await" no handler para ser atômico.
+_tickets_reservados = set()   # user_id que já abriu (ou está abrindo) um ticket
+_rolagens_em_andamento = set()  # user_id que já rolou (ou está rolando) o d100
+
 class DeleteTicketView(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -36,19 +41,22 @@ class RollView(discord.ui.View):
     async def rolar_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
         ja_rolou = interaction.guild.get_role(ROLE_JA_ROLOU_ID)
         lunariano = interaction.guild.get_role(ROLE_LUNARIANO_ID)
-        
-        if ja_rolou in interaction.user.roles:
+
+        # Checa e reserva a rolagem no mesmo trecho síncrono (sem await entre
+        # as duas linhas) para impedir dois cliques simultâneos passarem juntos.
+        if ja_rolou in interaction.user.roles or interaction.user.id in _rolagens_em_andamento:
             await interaction.response.send_message("Você já tentou rolar para esta raça!", ephemeral=True)
             return
+        _rolagens_em_andamento.add(interaction.user.id)
 
         resultado = random.randint(1, 100)
-        
+
         button.disabled = True
         await interaction.response.edit_message(view=self)
-        
+
         if resultado >= 90:
             await interaction.user.add_roles(lunariano, ja_rolou)
-            
+
             await interaction.followup.send("*Muito antes dos Dragões Celestiais erguerem Mary Geoise...*")
             await asyncio.sleep(3.5)
             await interaction.channel.send("*O topo da Red Line era o lar de seres descritos como divindades.*")
@@ -57,10 +65,10 @@ class RollView(discord.ui.View):
             await asyncio.sleep(4.0)
             await interaction.channel.send("*Capazes de sobreviver a qualquer ambiente extremo, eles foram caçados pelo Governo Mundial até a quase extinção. Mas a linhagem sobreviveu... no seu sangue.*")
             await asyncio.sleep(4.5)
-            
+
             gif_lunariano = "|| https://c.tenor.com/FKL7MQuy-yUAAAAC/tenor.gif||"
             await interaction.channel.send(f"👑 **O FOGO DOS LUNARIANS DESPERTOU!** 👑\n\n{interaction.user.mention}, você tirou **{resultado}** no d100! As chamas ancestrais agora queimam em você.\n**VOCÊ É UM LUNARIANO!**\n{gif_lunariano}")
-            
+
             canal_log = interaction.guild.get_channel(CANAL_LOG_ID)
             if canal_log:
                 embed_log = discord.Embed(title="🔥 Um Novo Lunariano Despertou!", color=discord.Color.red())
@@ -68,7 +76,7 @@ class RollView(discord.ui.View):
                 embed_log.add_field(name="Raça", value="Lunariano")
                 embed_log.add_field(name="Rolagem", value=f"**{resultado}**")
                 await canal_log.send(embed=embed_log)
-                
+
         else:
             await interaction.user.add_roles(ja_rolou)
             await interaction.followup.send(f"🎲 Você rolou **{resultado}**.")
@@ -90,37 +98,45 @@ class TicketView(discord.ui.View):
     @discord.ui.button(label="Teste de Linhagem (Lunariano)", style=discord.ButtonStyle.success, custom_id="btn_criar_ticket", emoji="🔥")
     async def criar_ticket(self, interaction: discord.Interaction, button: discord.ui.Button):
         ja_rolou = interaction.guild.get_role(ROLE_JA_ROLOU_ID)
-        
-        if ja_rolou in interaction.user.roles:
+
+        # Checa e reserva o ticket no mesmo trecho síncrono (sem await entre
+        # as duas linhas) para impedir dois cliques simultâneos abrirem 2 canais.
+        if ja_rolou in interaction.user.roles or interaction.user.id in _tickets_reservados:
             await interaction.response.send_message("Você já fez o teste para esta raça. Apenas uma oportunidade por jogador!", ephemeral=True)
             return
+        _tickets_reservados.add(interaction.user.id)
 
-        categoria = interaction.channel.category
-        
-        overwrites = {
-            interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
-            interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
-        }
-        
-        for staff_id in ROLE_STAFF_IDS:
-            staff_role = interaction.guild.get_role(staff_id)
-            if staff_role:
-                overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+        try:
+            categoria = interaction.channel.category
 
-        canal = await interaction.guild.create_text_channel(
-            name=f"teste-lunariano-{interaction.user.name}",
-            category=categoria,
-            overwrites=overwrites
-        )
+            overwrites = {
+                interaction.guild.default_role: discord.PermissionOverwrite(read_messages=False),
+                interaction.user: discord.PermissionOverwrite(read_messages=True, send_messages=True)
+            }
 
-        await interaction.response.send_message(f"A fenda abriu-se! Faça o seu teste em {canal.mention}", ephemeral=True)
-        
-        embed = discord.Embed(
-            title="O Teste Decisivo", 
-            description="Role os dados para descobrir se carrega a lendária linhagem Lunariana.\n**Condição de Sucesso:** 90 ou mais no d100.",
-            color=discord.Color.dark_theme()
-        )
-        await canal.send(f"{interaction.user.mention}", embed=embed, view=RollView())
+            for staff_id in ROLE_STAFF_IDS:
+                staff_role = interaction.guild.get_role(staff_id)
+                if staff_role:
+                    overwrites[staff_role] = discord.PermissionOverwrite(read_messages=True, send_messages=True)
+
+            canal = await interaction.guild.create_text_channel(
+                name=f"teste-lunariano-{interaction.user.name}",
+                category=categoria,
+                overwrites=overwrites
+            )
+
+            await interaction.response.send_message(f"A fenda abriu-se! Faça o seu teste em {canal.mention}", ephemeral=True)
+
+            embed = discord.Embed(
+                title="O Teste Decisivo",
+                description="Role os dados para descobrir se carrega a lendária linhagem Lunariana.\n**Condição de Sucesso:** 90 ou mais no d100.",
+                color=discord.Color.dark_theme()
+            )
+            await canal.send(f"{interaction.user.mention}", embed=embed, view=RollView())
+        except Exception:
+            # Libera a reserva se o ticket não chegou a ser criado, para não travar o usuário para sempre.
+            _tickets_reservados.discard(interaction.user.id)
+            raise
 
 # =================================================
 # O COG (Extensão para o Bot Principal)
