@@ -354,6 +354,34 @@ def _cache_save_sync(d):
     except Exception:
         pass
 
+# --- BACKOFF DE LOGIN (evita martelar a Cloudflare em loop de restart) ---
+LOGIN_BACKOFF_BASE = 60      # segundos
+LOGIN_BACKOFF_MAX = 900      # teto de 15 min
+
+def _login_backoff_esperar():
+    cache = _cache_load_sync()
+    info = cache.get("login_backoff", {"falhas": 0, "ultima": 0})
+    espera = min(LOGIN_BACKOFF_BASE * (2 ** info.get("falhas", 0)), LOGIN_BACKOFF_MAX)
+    decorrido = time.time() - info.get("ultima", 0)
+    if info.get("falhas", 0) > 0 and decorrido < espera:
+        faltam = espera - decorrido
+        print(f"⏳ Backoff ativo: aguardando {int(faltam)}s antes de tentar logar de novo (falha #{info['falhas']}).")
+        time.sleep(faltam)
+
+def _login_backoff_registrar_falha():
+    cache = _cache_load_sync()
+    info = cache.get("login_backoff", {"falhas": 0, "ultima": 0})
+    info["falhas"] = info.get("falhas", 0) + 1
+    info["ultima"] = time.time()
+    cache["login_backoff"] = info
+    _cache_save_sync(cache)
+
+def _login_backoff_registrar_sucesso():
+    cache = _cache_load_sync()
+    if cache.get("login_backoff", {}).get("falhas", 0):
+        cache["login_backoff"] = {"falhas": 0, "ultima": 0}
+        _cache_save_sync(cache)
+
 # --- NOVA FUNÇÃO DE SORTEIO COM MEMÓRIA ---
 def sortear_com_historico(rank, lista_disponiveis):
     global history
@@ -959,12 +987,15 @@ bot.setup_hook = setup_hook
 @bot.event
 async def on_ready():
     await load_async()  # Carrega os IDs das mensagens salvas
+    await asyncio.to_thread(_login_backoff_registrar_sucesso)  # login deu certo, zera o backoff
     print(f"✅ Online no Discord: {bot.user}")
 
+_login_backoff_esperar()
 try:
     bot.run(TOKEN)
 except discord.HTTPException as e:
     if e.status == 429:
-        print("⏳ Bloqueado temporariamente pela Cloudflare (IP com limite excedido). Aguardando 60s antes de encerrar, para não entrar em loop de reinícios.")
-        time.sleep(60)
+        _login_backoff_registrar_falha()
+        print("⏳ Bloqueado temporariamente pela Cloudflare (IP com limite excedido). Backoff registrado para a próxima tentativa.")
+        time.sleep(30)
     raise
