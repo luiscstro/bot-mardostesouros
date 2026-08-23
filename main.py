@@ -46,7 +46,12 @@ class EstoqueCog(commands.Cog):
 
     def connect_gsheets(self):
         try:
-            creds = ServiceAccountCredentials.from_json_keyfile_name(CAMINHO_JSON, self.scope)
+            creds_json = os.getenv("GOOGLE_CREDENTIALS_JSON")
+            if creds_json:
+                info = json.loads(creds_json)
+                creds = ServiceAccountCredentials.from_json_keyfile_dict(info, self.scope)
+            else:
+                creds = ServiceAccountCredentials.from_json_keyfile_name(CAMINHO_JSON, self.scope)
             client = gspread.authorize(creds)
             self.sheet = client.open(NOME_PLANILHA).worksheet(ABA_PLANILHA)
             print("✅ GSheets Conectado!")
