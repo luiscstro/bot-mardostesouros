@@ -26,7 +26,7 @@ NOME_PLANILHA = "Lista das Akuma no Mi NPCs - Mar dos Tesouros 2.1"
 ABA_PLANILHA = "Tabela Akuma"
 ARQUIVO_MSGS = "mensagens.json"
 ARQUIVO_CACHE = ".doffy_cache.json"
-ID_CARGO_ESPECIAL = 1222232775902494741
+ID_CARGO_ESPECIAL = 1222232432527413389
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
