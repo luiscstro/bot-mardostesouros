@@ -26,6 +26,7 @@ NOME_PLANILHA = "Lista das Akuma no Mi NPCs - Mar dos Tesouros 2.1"
 ABA_PLANILHA = "Tabela Akuma"
 ARQUIVO_MSGS = "mensagens.json"
 ARQUIVO_CACHE = ".doffy_cache.json"
+ID_CARGO_ESPECIAL = 1222232775902494741
 
 TOKEN = os.getenv("DISCORD_TOKEN")
 
@@ -780,7 +781,8 @@ async def ajuda(ctx):
             "`doffy!anuncio on/off` → Liga ou desliga as notificações globais.\n"
             "`doffy!limpar X` → Apaga X mensagens do chat atual.\n"
             "`doffy!editar <link>` → Altera o texto de uma mensagem do bot.\n"
-            "`doffy!reenviar <link> <canal>` → Copia e cola mensagens."
+            "`doffy!reenviar <link> <canal>` → Copia e cola mensagens.\n"
+            "`doffy!darcargo <@membro>` → Dá o cargo especial para o membro."
         )
         embed.add_field(name="🔒 Staff", value=staff, inline=False)
     
@@ -962,6 +964,24 @@ async def cuspir(ctx, *, busca_fruta: str):
         await msg.edit(content=f"🤮 **Bleargh!** Planilha atualizada! A **{nome_fruta}** foi cuspida e agora está solta pelo mundo de novo.")
     else:
         await msg.edit(content="❌ Falha ao atualizar a planilha. Será que ela desceu pelo buraco errado?")
+
+# 5️⃣ COMANDO: DAR O CARGO ESPECIAL PARA ALGUÉM
+@bot.command(name="darcargo")
+@commands.check(is_staff)
+async def darcargo(ctx, membro: discord.Member):
+    """Dá o cargo especial configurado (ID_CARGO_ESPECIAL) para o membro mencionado."""
+    cargo = ctx.guild.get_role(ID_CARGO_ESPECIAL)
+    if not cargo:
+        return await ctx.send("❌ Não achei esse cargo no servidor.")
+
+    if cargo in membro.roles:
+        return await ctx.send(f"⚠️ {membro.mention} já tem o cargo **{cargo.name}**.")
+
+    try:
+        await membro.add_roles(cargo, reason=f"Concedido por {ctx.author}")
+        await ctx.send(f"✅ Cargo **{cargo.name}** dado para {membro.mention}.")
+    except discord.Forbidden:
+        await ctx.send("❌ Sem permissão pra dar esse cargo — confere se o cargo do bot está acima dele na hierarquia.")
 
 # 4️⃣ COMANDO: VER O HISTÓRICO DAS ÚLTIMAS FRUTAS
 @bot.command(name="historico")
