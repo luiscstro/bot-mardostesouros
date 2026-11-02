@@ -7,3 +7,7 @@ mensagens.json
 # Ignorar o ambiente virtual e caches do Python
 .venv/
 __pycache__/
+# Testes
+.coverage
+.pytest_cache/
+.hypothesis/

@@ -10,6 +10,7 @@ import math
 import asyncio
 import re
 import io
+import copy
 import time
 import aiohttp
 from dotenv import load_dotenv
@@ -38,10 +39,20 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="doffy!", intents=intents, help_command=None)
 
 # --- GOOGLE SHEETS ---
+SHEETS_ESPERA_RETRY = (1, 2)   # segundos entre tentativas em erros transitórios (429/5xx)
+
+class PlanilhaIndisponivel(Exception):
+    """Não foi possível LER a planilha (permissão, cota, rede...). Diferente de planilha vazia."""
+
+def _erro_transitorio(exc):
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    return status == 429 or (isinstance(status, int) and status >= 500)
+
 class EstoqueCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.sheet = None
+        self.service_account_email = None
         self.scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets', "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
         self.connect_gsheets()
 
@@ -53,6 +64,7 @@ class EstoqueCog(commands.Cog):
                 creds = ServiceAccountCredentials.from_json_keyfile_dict(info, self.scope)
             else:
                 creds = ServiceAccountCredentials.from_json_keyfile_name(CAMINHO_JSON, self.scope)
+            self.service_account_email = getattr(creds, "service_account_email", None)
             client = gspread.authorize(creds)
             self.sheet = client.open(NOME_PLANILHA).worksheet(ABA_PLANILHA)
             print("✅ GSheets Conectado!")
@@ -62,10 +74,26 @@ class EstoqueCog(commands.Cog):
             self.sheet = None
             return False
 
-    def _fetch_sync(self):
+    def _ler_valores(self):
+        """Lê a aba inteira; tenta reconectar e repete em erros transitórios. Levanta PlanilhaIndisponivel."""
         if not self.sheet: self.connect_gsheets()
+        if not self.sheet:
+            raise PlanilhaIndisponivel("planilha não conectada")
+        tentativas = len(SHEETS_ESPERA_RETRY) + 1
+        for i in range(tentativas):
+            try:
+                return self.sheet.get_all_values()
+            except gspread.exceptions.APIError as e:
+                if _erro_transitorio(e) and i < tentativas - 1:
+                    time.sleep(SHEETS_ESPERA_RETRY[i])
+                    continue
+                raise PlanilhaIndisponivel(str(e)) from e
+            except Exception as e:
+                raise PlanilhaIndisponivel(str(e)) from e
+
+    def _fetch_sync(self):
+        data = self._ler_valores()
         try:
-            data = self.sheet.get_all_values()
             if not data: return []
             
             idx_head = 0
@@ -104,8 +132,8 @@ class EstoqueCog(commands.Cog):
                 })
             return frutas
         except Exception as e:
-            print(f"Erro leitura: {e}")
-            return []
+            print(f"Erro ao interpretar a planilha: {e}")
+            raise PlanilhaIndisponivel(f"formato inesperado: {e}") from e
 
     async def get_frutas(self):
         return await asyncio.to_thread(self._fetch_sync)
@@ -184,6 +212,8 @@ class EstoqueCog(commands.Cog):
                         inline=False
                     )
                 pages.append(emb)
+
+        if not pages: return await ctx.send("❌ Nenhuma fruta encontrada.")
 
         msg = await ctx.send(embed=pages[0])
         
@@ -324,8 +354,10 @@ def _load_sync():
                 msg_ids["B"] = d.get("B")
                 msg_ids["A"] = d.get("A")
                 announce_on = d.get("announce_enabled", True)
-                # Se não existir histórico antigo, cria um vazio
-                history = d.get("history", {"C": [], "B": [], "A": []}) 
+                # Se não existir histórico antigo (ou faltar algum rank), completa com listas vazias
+                salvo = d.get("history")
+                if not isinstance(salvo, dict): salvo = {}
+                history = {r: (list(salvo[r]) if isinstance(salvo.get(r), list) else []) for r in ("C", "B", "A")}
         except Exception as e: 
             print(f"Erro ao carregar JSON: {e}")
 
@@ -458,6 +490,7 @@ async def send_chunked(channel, text: str, chunk_size: int = 2000):
 
 
 async def run_update():
+    """Atualiza as 3 lojas. Retorna False se a planilha não pôde ser lida (nada foi alterado)."""
     global msg_ids
     print("🔄 Iniciando atualização das lojas...")
     cog = bot.get_cog("EstoqueCog")
@@ -467,6 +500,7 @@ async def run_update():
     await load_async()  # async para não bloquear o event loop
 
     cache = await asyncio.to_thread(_cache_load_sync)
+    cache_original = copy.deepcopy(cache)
     cache["contador"] = cache.get("contador", 0) + 1
     rotacao_atual = str(cache["contador"])
 
@@ -517,15 +551,31 @@ async def run_update():
             emb.set_image(url=random.choice(gifs))
             await ch_anun.send(content=" ".join(mentions), embed=emb)
 
+        return True
+
+    except PlanilhaIndisponivel as e:
+        # Não troca as lojas por "Esgotado" nem gasta a rotação/agenda: será tentado de novo.
+        print(f"❌ Atualização adiada: não consegui ler a planilha ({e}).")
+        cache = cache_original
+        return False
     except Exception as e:
         print(f"❌ Erro crítico update: {e}")
     finally:
         await asyncio.to_thread(_cache_save_sync, cache)
 
+AUTO_UPDATE_TENTATIVAS = 4
+AUTO_UPDATE_ESPERA = 600   # segundos entre tentativas quando a planilha está indisponível
+
 @tasks.loop(time=datetime.time(hour=15, minute=0, tzinfo=datetime.timezone.utc))
 async def auto_update():
-    if datetime.datetime.now(datetime.timezone.utc).weekday() == 6:
-        await run_update()
+    if datetime.datetime.now(datetime.timezone.utc).weekday() != 6:
+        return
+    for tentativa in range(AUTO_UPDATE_TENTATIVAS):
+        if await run_update() is not False:
+            return
+        if tentativa < AUTO_UPDATE_TENTATIVAS - 1:
+            await asyncio.sleep(AUTO_UPDATE_ESPERA)
+    print("❌ Atualização semanal não concluída: planilha indisponível. Use doffy!forcarteste quando normalizar.")
 
 # --- COMANDOS STAFF ---
 @bot.command()
@@ -561,12 +611,18 @@ async def reroll(ctx, rank: str, *, fruta: str = None):
     await load_async()  # Puxa o histórico antes de rodar
     
     if not fruta:
-        opts = await cog.disponiveis(rank)
+        try:
+            opts = await cog.disponiveis(rank)
+        except PlanilhaIndisponivel as e:
+            print(f"❌ Erro ao ler a planilha: {e}")
+            return await ctx.send("❌ Não consegui ler a planilha agora. Tente de novo em instantes.")
         if not opts: return await ctx.send("Sem frutas.")
         # AQUI: Usa a função inteligente
         fruta = sortear_com_historico(rank, opts) 
     
     ch = bot.get_channel({"C": ID_CANAL_C, "B": ID_CANAL_B, "A": ID_CANAL_A}[rank])
+    if not ch:
+        return await ctx.send(f"❌ Canal da Loja {rank} não encontrado.")
     txt = get_msg_content(rank, fruta)
     msg_resolvida = False
     
@@ -808,7 +864,10 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.CheckFailure):
         await ctx.send("🚫 Sem permissão.")
     else:
-        print(f"Erro: {error}")
+        import traceback
+        original = getattr(error, "original", error)
+        print(f"Erro no comando '{ctx.command}': {error}")
+        traceback.print_exception(type(original), original, original.__traceback__)
 
 # ==========================================
 # NOVA FORMA SEGURA DE CARREGAR AS EXTENSÕES
@@ -844,7 +903,12 @@ async def atualizar_planilha_status(ctx, busca_fruta, novo_status):
         await ctx.send("❌ Erro: Planilha não conectada.")
         return None
         
-    fs = await cog.get_frutas()
+    try:
+        fs = await cog.get_frutas()
+    except PlanilhaIndisponivel as e:
+        print(f"❌ Erro ao ler a planilha: {e}")
+        await ctx.send("❌ Não consegui ler a planilha agora. Tente de novo em instantes.")
+        return None
     b = busca_fruta.lower().replace(" ", "")
     achou = next((f for f in fs if b in f['nome'].lower().replace(" ", "") or b == f['numero'] or b == f"{f['rank'].lower()}{f['numero']}"), None)
 
@@ -872,7 +936,20 @@ async def atualizar_planilha_status(ctx, busca_fruta, novo_status):
         return None
 
     # Envia a ordem pro Excel rodar nos bastidores (para não travar o bot)
-    nome_exato = await asyncio.to_thread(do_update)
+    try:
+        nome_exato = await asyncio.to_thread(do_update)
+    except gspread.exceptions.APIError as e:
+        status = getattr(e.response, "status_code", None)
+        print(f"❌ Erro ao escrever na planilha (HTTP {status}): {e}")
+        if status == 403:
+            email = cog.service_account_email or "a conta de serviço do bot"
+            await ctx.send(
+                "❌ Sem permissão para **editar** a planilha. Compartilhe ela como **Editor** com:\n"
+                f"`{email}`"
+            )
+        else:
+            await ctx.send("❌ O Google recusou a atualização da planilha. Tente de novo em instantes.")
+        return None
     return nome_exato
 
 
@@ -1015,12 +1092,17 @@ async def on_ready():
     await asyncio.to_thread(_login_backoff_registrar_sucesso)  # login deu certo, zera o backoff
     print(f"✅ Online no Discord: {bot.user}")
 
-_login_backoff_esperar()
-try:
-    bot.run(TOKEN)
-except discord.HTTPException as e:
-    if e.status == 429:
-        _login_backoff_registrar_falha()
-        print("⏳ Bloqueado temporariamente pela Cloudflare (IP com limite excedido). Backoff registrado para a próxima tentativa.")
-        time.sleep(30)
-    raise
+def main():
+    _login_backoff_esperar()
+    try:
+        bot.run(TOKEN)
+    except discord.HTTPException as e:
+        if e.status == 429:
+            _login_backoff_registrar_falha()
+            print("⏳ Bloqueado temporariamente pela Cloudflare (IP com limite excedido). Backoff registrado para a próxima tentativa.")
+            time.sleep(30)
+        raise
+
+# Só conecta ao Discord quando executado direto (python main.py); permite importar o módulo nos testes.
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,11 @@
+# Dependências para rodar os testes: pip install -r requirements-test.txt && pytest
+pytest
+pytest-asyncio
+pytest-cov
+hypothesis
+discord.py
+gspread
+oauth2client
+aiohttp
+groq
+python-dotenv
