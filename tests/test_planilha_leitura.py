@@ -80,10 +80,26 @@ class TestFetchSync:
         cog, _ = cog_factory(v)
         assert cog._fetch_sync() == [{"rank": "A", "numero": "3", "nome": "Fruta", "status": ""}]
 
-    def test_erro_de_leitura_retorna_lista_vazia(self, cog_factory, capsys):
-        cog, _ = cog_factory(read_error=api_error(500, "boom"))
+    @pytest.mark.parametrize("codigo", [400, 401, 403, 404, 500, 503])
+    def test_erro_de_leitura_levanta_planilha_indisponivel(self, main_mod, cog_factory, codigo):
+        """Antes o erro era engolido e virava '[]' (= nenhuma fruta), o que fazia as lojas virarem 'Esgotado'."""
+        cog, _ = cog_factory(read_error=api_error(codigo, "boom"))
+        with pytest.raises(main_mod.PlanilhaIndisponivel):
+            cog._fetch_sync()
+
+    def test_planilha_vazia_de_verdade_continua_sendo_lista_vazia(self, cog_factory):
+        cog, _ = cog_factory([])
         assert cog._fetch_sync() == []
-        assert "Erro leitura" in capsys.readouterr().out
+
+    def test_erro_inesperado_na_leitura_tambem_vira_planilha_indisponivel(self, main_mod, cog_factory):
+        cog, _ = cog_factory(read_error=ConnectionError("rede caiu"))
+        with pytest.raises(main_mod.PlanilhaIndisponivel):
+            cog._fetch_sync()
+
+    def test_formato_inesperado_vira_planilha_indisponivel(self, main_mod, cog_factory):
+        cog, _ = cog_factory([["Rank", "N°", "Nome", "x", "Status"], None])   # linha None
+        with pytest.raises(main_mod.PlanilhaIndisponivel):
+            cog._fetch_sync()
 
     def test_sem_sheet_tenta_reconectar(self, cog_factory, monkeypatch):
         cog, _ = cog_factory(tabela(("C", 1, "A", "")))
@@ -98,11 +114,60 @@ class TestFetchSync:
         assert cog._fetch_sync()[0]["nome"] == "Reconectada"
         assert chamadas == [1]
 
-    def test_sem_sheet_e_reconexao_falha_retorna_vazio(self, cog_factory, monkeypatch):
+    def test_sem_sheet_e_reconexao_falha_levanta(self, main_mod, cog_factory, monkeypatch):
         cog, _ = cog_factory()
         cog.sheet = None
         monkeypatch.setattr(cog, "connect_gsheets", lambda: False)
-        assert cog._fetch_sync() == []
+        with pytest.raises(main_mod.PlanilhaIndisponivel):
+            cog._fetch_sync()
+
+
+class TestRetry:
+    """Erros transitórios do Google (429/5xx) são repetidos; 403/404 não."""
+
+    class SheetFlaky(FakeSheet):
+        def __init__(self, valores, erros):
+            super().__init__(valores)
+            self.erros = list(erros)
+            self.chamadas = 0
+
+        def get_all_values(self):
+            self.chamadas += 1
+            if self.erros:
+                raise self.erros.pop(0)
+            return super().get_all_values()
+
+    @pytest.mark.parametrize("codigo", [429, 500, 502, 503])
+    def test_recupera_apos_erro_transitorio(self, cog_factory, codigo):
+        cog, _ = cog_factory()
+        cog.sheet = self.SheetFlaky(tabela(("C", 1, "A", "")), [api_error(codigo)])
+        assert cog._fetch_sync()[0]["nome"] == "A"
+        assert cog.sheet.chamadas == 2
+
+    def test_desiste_depois_de_3_tentativas(self, main_mod, cog_factory):
+        cog, _ = cog_factory()
+        cog.sheet = self.SheetFlaky([], [api_error(503)] * 5)
+        with pytest.raises(main_mod.PlanilhaIndisponivel):
+            cog._fetch_sync()
+        assert cog.sheet.chamadas == 3
+
+    @pytest.mark.parametrize("codigo", [400, 401, 403, 404])
+    def test_erro_permanente_nao_repete(self, main_mod, cog_factory, codigo):
+        cog, _ = cog_factory()
+        cog.sheet = self.SheetFlaky([], [api_error(codigo)] * 5)
+        with pytest.raises(main_mod.PlanilhaIndisponivel):
+            cog._fetch_sync()
+        assert cog.sheet.chamadas == 1
+
+    def test_espera_entre_tentativas(self, main_mod, cog_factory, monkeypatch):
+        monkeypatch.setattr(main_mod, "SHEETS_ESPERA_RETRY", (1, 2))
+        dormiu = []
+        monkeypatch.setattr(main_mod.time, "sleep", dormiu.append)
+        cog, _ = cog_factory()
+        cog.sheet = self.SheetFlaky([], [api_error(503)] * 5)
+        with pytest.raises(main_mod.PlanilhaIndisponivel):
+            cog._fetch_sync()
+        assert dormiu == [1, 2]
 
 
 class TestGetFrutasEDisponiveis:

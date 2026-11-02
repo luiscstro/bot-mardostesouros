@@ -270,6 +270,18 @@ class TestRunUpdate:
         assert main_mod._cache_load_sync()["contador"] == 1
 
 
+class TestRetornoDoRunUpdate:
+    async def test_true_em_sucesso(self, main_mod, mercado):
+        await mercado()
+        assert await main_mod.run_update() is True
+
+    async def test_false_quando_planilha_indisponivel(self, main_mod, mercado):
+        from conftest import api_error
+        m = await mercado()
+        m.sheet.read_error = api_error(503)
+        assert await main_mod.run_update() is False
+
+
 # --------------------------------------------------------------- auto_update ---
 def _fake_datetime_module(main_mod, ano, mes, dia, hora=15, minuto=0):
     real = datetime.datetime
@@ -298,6 +310,25 @@ class TestAutoUpdate:
         await main_mod.auto_update.coro()
         run.assert_not_awaited()
 
+    async def test_tenta_de_novo_quando_planilha_indisponivel(self, main_mod, monkeypatch):
+        monkeypatch.setattr(main_mod, "datetime", _fake_datetime_module(main_mod, 2026, 11, 8))
+        run = AsyncMock(side_effect=[False, False, True]); monkeypatch.setattr(main_mod, "run_update", run)
+        await main_mod.auto_update.coro()
+        assert run.await_count == 3     # parou assim que deu certo
+
+    async def test_desiste_depois_do_limite_e_avisa_no_log(self, main_mod, monkeypatch, capsys):
+        monkeypatch.setattr(main_mod, "datetime", _fake_datetime_module(main_mod, 2026, 11, 8))
+        run = AsyncMock(return_value=False); monkeypatch.setattr(main_mod, "run_update", run)
+        await main_mod.auto_update.coro()
+        assert run.await_count == main_mod.AUTO_UPDATE_TENTATIVAS
+        assert "forcarteste" in capsys.readouterr().out
+
+    async def test_erro_generico_do_update_nao_gera_retentativa(self, main_mod, monkeypatch):
+        monkeypatch.setattr(main_mod, "datetime", _fake_datetime_module(main_mod, 2026, 11, 8))
+        run = AsyncMock(return_value=None); monkeypatch.setattr(main_mod, "run_update", run)
+        await main_mod.auto_update.coro()
+        run.assert_awaited_once()
+
     def test_agendada_para_15h_utc(self, main_mod):
         assert main_mod.auto_update.time == [datetime.time(15, 0, tzinfo=datetime.timezone.utc)]
 
@@ -316,3 +347,29 @@ class TestProxima:
         monkeypatch.setattr(main_mod, "datetime", _fake_datetime_module(main_mod, *dia, hora, minuto))
         await main_mod.proxima.callback(ctx)
         assert esperado in ctx.send.call_args.kwargs["embed"].description
+
+
+class TestFalhaDeLeituraNaVirada:
+    """Se o Google falhar na leitura, as lojas NÃO podem ser trocadas por 'Esgotado'."""
+
+    async def test_erro_de_leitura_nao_publica_esgotado(self, main_mod, mercado):
+        from conftest import api_error
+        m = await mercado()
+        main_mod.msg_ids.update({"C": 11, "B": 22, "A": 33})
+        main_mod.save()
+        m.sheet.read_error = api_error(403)
+        await main_mod.run_update()
+        for r in "CBA":
+            m.msgs[r].edit.assert_not_awaited()
+            m.canais[m.ids[r]].send.assert_not_awaited()
+        m.canais[m.ids["anuncio"]].send.assert_not_awaited()   # nem anuncia uma troca que não houve
+
+    async def test_erro_de_leitura_nao_consome_a_rotacao_nem_a_agenda(self, main_mod, mercado):
+        from conftest import api_error
+        m = await mercado()
+        main_mod._cache_save_sync({"contador": 4, "agenda": {"C": {"5": "Fruta C2"}, "B": {}, "A": {}}})
+        m.sheet.read_error = api_error(500, "boom")
+        await main_mod.run_update()
+        cache = main_mod._cache_load_sync()
+        assert cache["agenda"]["C"] == {"5": "Fruta C2"}
+        assert cache["contador"] == 4   # a rotação que falhou será tentada de novo

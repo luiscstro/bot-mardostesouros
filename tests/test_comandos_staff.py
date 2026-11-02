@@ -154,6 +154,13 @@ class TestReroll:
         await main_mod.reroll.callback(staff_ctx, rank="C")
         assert main_mod.history["C"][0] in {"C1", "C2"}
 
+    async def test_erro_de_leitura_nao_diz_que_nao_ha_frutas(self, main_mod, staff_ctx, setup):
+        cog, ch, _ = await setup()
+        cog.sheet.read_error = api_error(403)
+        await main_mod.reroll.callback(staff_ctx, rank="C")
+        assert "Não consegui ler" in staff_ctx.send.call_args.args[0]
+        ch.send.assert_not_awaited()
+
     async def test_sem_frutas_disponiveis(self, main_mod, staff_ctx, setup):
         await setup(tabela(("C", 1, "C1", "ocupada")))
         await main_mod.reroll.callback(staff_ctx, rank="C")

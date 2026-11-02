@@ -118,6 +118,8 @@ def estado_isolado(tmp_path, monkeypatch):
     monkeypatch.setattr(m, "history", {"C": [], "B": [], "A": []})
     monkeypatch.setattr(m, "announce_on", True)
     monkeypatch.delenv("GOOGLE_CREDENTIALS_JSON", raising=False)
+    monkeypatch.setattr(m, "SHEETS_ESPERA_RETRY", (0, 0))     # sem esperas reais nos retries
+    monkeypatch.setattr(m, "AUTO_UPDATE_ESPERA", 0)
     # bot.wait_for real exige o bot conectado; por padrão "ninguém reage" (timeout).
     monkeypatch.setattr(m.bot, "wait_for", AsyncMock(side_effect=asyncio.TimeoutError), raising=False)
     yield

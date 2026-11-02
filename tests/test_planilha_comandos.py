@@ -132,10 +132,20 @@ class TestEnc:
         monkeypatch.setattr(main_mod.bot, "wait_for", AsyncMock(side_effect=[(r, MagicMock()), asyncio.TimeoutError]))
         await cog.enc.callback(cog, ctx)  # não levanta
 
-    async def test_erro_ao_ler_planilha_nao_levanta(self, cog_factory, ctx):
+    async def test_erro_ao_ler_planilha_avisa_sem_levantar(self, cog_factory, ctx):
         cog, _ = cog_factory(read_error=api_error(403))
         await cog.enc.callback(cog, ctx)
-        assert "Nenhuma fruta" in ctx.send.call_args.args[0]
+        assert ctx.send.call_args.args[0] == "Erro ao ler planilha."
+
+    async def test_fruta_com_erro_de_leitura(self, cog_factory, ctx):
+        cog, _ = cog_factory(read_error=api_error(403))
+        await cog.fruta.callback(cog, ctx, busca="x")
+        assert ctx.send.call_args.args[0] == "Erro ao ler dados."
+
+    async def test_check_pool_com_erro_de_leitura(self, cog_factory, staff_ctx):
+        cog, _ = cog_factory(read_error=api_error(403))
+        await cog.check_pool.callback(cog, staff_ctx)
+        assert "Erro ao acessar" in staff_ctx.send.call_args.args[0]
 
     async def test_fruta_com_rank_desconhecido_nao_quebra(self, cog_factory, ctx):
         """Regressão: rank fora de C/B/A/S deixava 'pages' vazio -> IndexError."""

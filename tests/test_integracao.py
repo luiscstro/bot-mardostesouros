@@ -176,11 +176,11 @@ class TestPlanilhaFimAFim:
         await despachar("doffy!posse gomu gomu, Bando X", staff)
         assert "Gomu Gomu no Mi" not in await cog.disponiveis("C")
 
-    async def test_leitura_com_403_nao_quebra_o_enc(self, despachar, bot_com_estoque):
+    async def test_leitura_com_403_avisa_erro_no_enc(self, despachar, bot_com_estoque):
         _, sheet = bot_com_estoque
         sheet.read_error = api_error(403)
         ctx = await despachar("doffy!enc")
-        assert "Nenhuma fruta" in ctx.textos[0]
+        assert ctx.textos == ["Erro ao ler planilha."]
 
 
 class TestConsultasFimAFim:

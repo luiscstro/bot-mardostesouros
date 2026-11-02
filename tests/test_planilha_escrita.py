@@ -84,10 +84,11 @@ class TestAtualizarPlanilhaStatus:
         msg = ctx.send.call_args.args[0]
         assert "Editor" not in msg and "recusou" in msg
 
-    async def test_erro_na_leitura_da_api_nao_vaza_excecao(self, main_mod, cog_registrado, valores, ctx):
-        # get_frutas engole o erro (retorna []) -> "não achei", mas nunca levanta
-        cog, _ = await cog_registrado(valores, read_error=api_error(403))
+    async def test_erro_na_leitura_da_api_avisa_e_nao_escreve(self, main_mod, cog_registrado, valores, ctx):
+        cog, sheet = await cog_registrado(valores, read_error=api_error(403))
         assert await main_mod.atualizar_planilha_status(ctx, "gomu", "x") is None
+        assert "Não consegui ler a planilha" in ctx.send.call_args.args[0]
+        assert sheet.updates == []
 
     async def test_erro_inesperado_que_nao_e_apierror_propaga(self, main_mod, cog_registrado, valores, ctx):
         cog, _ = await cog_registrado(valores, write_error=RuntimeError("bug"))
