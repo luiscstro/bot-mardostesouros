@@ -137,11 +137,17 @@ class TestEnc:
         await cog.enc.callback(cog, ctx)
         assert "Nenhuma fruta" in ctx.send.call_args.args[0]
 
-    @pytest.mark.xfail(strict=True, reason="BUG conhecido: fruta com rank fora de C/B/A/S deixa 'pages' vazio -> IndexError")
-    async def test_fruta_com_rank_desconhecido_nao_deve_quebrar(self, cog_factory, ctx):
+    async def test_fruta_com_rank_desconhecido_nao_quebra(self, cog_factory, ctx):
+        """Regressão: rank fora de C/B/A/S deixava 'pages' vazio -> IndexError."""
         cog, _ = cog_factory(tabela(("X", 1, "Fruta sem rank valido", "")))
         await cog.enc.callback(cog, ctx)
-        ctx.send.assert_awaited()
+        assert "Nenhuma fruta" in ctx.send.call_args.args[0]
+
+    async def test_rank_desconhecido_misturado_com_validos_so_mostra_os_validos(self, cog_factory, ctx):
+        cog, _ = cog_factory(tabela(("X", 1, "Invalida", ""), ("C", 1, "Valida", "")))
+        await cog.enc.callback(cog, ctx)
+        nomes = [f.name for f in ctx.send.call_args.kwargs["embed"].fields]
+        assert nomes == ["🟢 #1 Valida"]
 
 
 # ------------------------------------------------------------------- fruta ---

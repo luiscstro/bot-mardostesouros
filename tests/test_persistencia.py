@@ -67,12 +67,20 @@ class TestSaveLoad:
         main_mod.load()
         assert main_mod.history["C"] == ["Fruta do Vaca: Modelo Cabra ✨"]
 
-    @pytest.mark.xfail(strict=True, reason="BUG conhecido: histórico salvo sem a chave de um rank causa KeyError em sortear_com_historico")
-    def test_historico_parcial_nao_deve_quebrar_sorteio(self, main_mod):
+    def test_historico_parcial_e_completado_e_sorteio_funciona(self, main_mod):
+        """Regressão: histórico salvo sem a chave de um rank causava KeyError no sorteio."""
         with open(main_mod.ARQUIVO_MSGS, "w") as f:
             json.dump({"history": {"C": ["a"]}}, f)
         main_mod.load()
-        main_mod.sortear_com_historico("B", ["x", "y"])
+        assert main_mod.history == {"C": ["a"], "B": [], "A": []}
+        assert main_mod.sortear_com_historico("B", ["x", "y"]) in {"x", "y"}
+
+    @pytest.mark.parametrize("lixo", [None, [], "texto", 5, {"C": "nao-lista", "B": None, "A": 3}])
+    def test_historico_com_formato_invalido_vira_vazio(self, main_mod, lixo):
+        with open(main_mod.ARQUIVO_MSGS, "w") as f:
+            json.dump({"history": lixo}, f)
+        main_mod.load()
+        assert main_mod.history == {"C": [], "B": [], "A": []}
 
 
 # -------------------------------------------------------------------- cache ---

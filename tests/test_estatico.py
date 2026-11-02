@@ -33,15 +33,9 @@ def test_sintaxe_valida(caminho):
         ast.parse(f.read(), filename=caminho)
 
 
-@pytest.mark.parametrize("caminho", [p for p in ARQUIVOS_PY if os.path.basename(p) != "teste.py"], ids=os.path.basename)
+@pytest.mark.parametrize("caminho", ARQUIVOS_PY, ids=os.path.basename)
 def test_nenhum_segredo_no_codigo(caminho):
     assert segredos_em(caminho) == [], f"{os.path.basename(caminho)} contém segredo hardcoded; use variável de ambiente"
-
-
-@pytest.mark.xfail(strict=True, reason="PENDENTE: teste.py tem uma chave de API do Google hardcoded e commitada. "
-                                       "Apague/mova o arquivo, REVOGUE a chave e remova este xfail.")
-def test_teste_py_sem_segredo():
-    assert segredos_em(os.path.join(ROOT, "teste.py")) == []
 
 
 def test_arquivos_sensiveis_estao_no_gitignore():

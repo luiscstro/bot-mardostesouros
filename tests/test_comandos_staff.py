@@ -166,11 +166,14 @@ class TestReroll:
         main_mod.load()
         assert main_mod.msg_ids["C"] == 7
 
-    @pytest.mark.xfail(strict=True, reason="BUG conhecido: canal inexistente (get_channel -> None) causa AttributeError")
-    async def test_canal_inexistente_nao_deve_quebrar(self, main_mod, staff_ctx, cog_registrado, monkeypatch):
+    async def test_canal_inexistente_avisa_em_vez_de_quebrar(self, main_mod, staff_ctx, cog_registrado, monkeypatch):
+        """Regressão: get_channel -> None causava AttributeError."""
         await cog_registrado(tabela(("C", 1, "C1", "")))
         monkeypatch.setattr(main_mod.bot, "get_channel", lambda cid: None)
         await main_mod.reroll.callback(staff_ctx, rank="C", fruta="X")
+        assert "não encontrado" in staff_ctx.send.call_args.args[0]
+        staff_ctx.message.add_reaction.assert_not_awaited()
+        assert main_mod.msg_ids["C"] is None
 
 
 # ------------------------------------------------------------------------ pl ---

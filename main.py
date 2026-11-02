@@ -187,6 +187,8 @@ class EstoqueCog(commands.Cog):
                     )
                 pages.append(emb)
 
+        if not pages: return await ctx.send("❌ Nenhuma fruta encontrada.")
+
         msg = await ctx.send(embed=pages[0])
         
         if len(pages) > 1:
@@ -326,8 +328,10 @@ def _load_sync():
                 msg_ids["B"] = d.get("B")
                 msg_ids["A"] = d.get("A")
                 announce_on = d.get("announce_enabled", True)
-                # Se não existir histórico antigo, cria um vazio
-                history = d.get("history", {"C": [], "B": [], "A": []}) 
+                # Se não existir histórico antigo (ou faltar algum rank), completa com listas vazias
+                salvo = d.get("history")
+                if not isinstance(salvo, dict): salvo = {}
+                history = {r: (list(salvo[r]) if isinstance(salvo.get(r), list) else []) for r in ("C", "B", "A")}
         except Exception as e: 
             print(f"Erro ao carregar JSON: {e}")
 
@@ -569,6 +573,8 @@ async def reroll(ctx, rank: str, *, fruta: str = None):
         fruta = sortear_com_historico(rank, opts) 
     
     ch = bot.get_channel({"C": ID_CANAL_C, "B": ID_CANAL_B, "A": ID_CANAL_A}[rank])
+    if not ch:
+        return await ctx.send(f"❌ Canal da Loja {rank} não encontrado.")
     txt = get_msg_content(rank, fruta)
     msg_resolvida = False
     
