@@ -42,6 +42,7 @@ class EstoqueCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.sheet = None
+        self.service_account_email = None
         self.scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets', "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
         self.connect_gsheets()
 
@@ -53,6 +54,7 @@ class EstoqueCog(commands.Cog):
                 creds = ServiceAccountCredentials.from_json_keyfile_dict(info, self.scope)
             else:
                 creds = ServiceAccountCredentials.from_json_keyfile_name(CAMINHO_JSON, self.scope)
+            self.service_account_email = getattr(creds, "service_account_email", None)
             client = gspread.authorize(creds)
             self.sheet = client.open(NOME_PLANILHA).worksheet(ABA_PLANILHA)
             print("✅ GSheets Conectado!")
@@ -808,7 +810,10 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.CheckFailure):
         await ctx.send("🚫 Sem permissão.")
     else:
-        print(f"Erro: {error}")
+        import traceback
+        original = getattr(error, "original", error)
+        print(f"Erro no comando '{ctx.command}': {error}")
+        traceback.print_exception(type(original), original, original.__traceback__)
 
 # ==========================================
 # NOVA FORMA SEGURA DE CARREGAR AS EXTENSÕES
@@ -872,7 +877,20 @@ async def atualizar_planilha_status(ctx, busca_fruta, novo_status):
         return None
 
     # Envia a ordem pro Excel rodar nos bastidores (para não travar o bot)
-    nome_exato = await asyncio.to_thread(do_update)
+    try:
+        nome_exato = await asyncio.to_thread(do_update)
+    except gspread.exceptions.APIError as e:
+        status = getattr(e.response, "status_code", None)
+        print(f"❌ Erro ao escrever na planilha (HTTP {status}): {e}")
+        if status == 403:
+            email = cog.service_account_email or "a conta de serviço do bot"
+            await ctx.send(
+                "❌ Sem permissão para **editar** a planilha. Compartilhe ela como **Editor** com:\n"
+                f"`{email}`"
+            )
+        else:
+            await ctx.send("❌ O Google recusou a atualização da planilha. Tente de novo em instantes.")
+        return None
     return nome_exato
 
 
