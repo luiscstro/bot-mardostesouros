@@ -1033,12 +1033,17 @@ async def on_ready():
     await asyncio.to_thread(_login_backoff_registrar_sucesso)  # login deu certo, zera o backoff
     print(f"✅ Online no Discord: {bot.user}")
 
-_login_backoff_esperar()
-try:
-    bot.run(TOKEN)
-except discord.HTTPException as e:
-    if e.status == 429:
-        _login_backoff_registrar_falha()
-        print("⏳ Bloqueado temporariamente pela Cloudflare (IP com limite excedido). Backoff registrado para a próxima tentativa.")
-        time.sleep(30)
-    raise
+def main():
+    _login_backoff_esperar()
+    try:
+        bot.run(TOKEN)
+    except discord.HTTPException as e:
+        if e.status == 429:
+            _login_backoff_registrar_falha()
+            print("⏳ Bloqueado temporariamente pela Cloudflare (IP com limite excedido). Backoff registrado para a próxima tentativa.")
+            time.sleep(30)
+        raise
+
+# Só conecta ao Discord quando executado direto (python main.py); permite importar o módulo nos testes.
+if __name__ == "__main__":
+    main()
