@@ -580,10 +580,20 @@ async def auto_update():
 # --- COMANDOS STAFF ---
 @bot.command()
 @commands.check(is_staff)
-async def say(ctx, *, m):
+async def say(ctx, *, m=""):
+    anexos = ctx.message.attachments
+    if not m and not anexos:
+        return await ctx.send("⚠️ Use `doffy!say <texto>` e/ou anexe uma imagem.", delete_after=8)
+    # Baixa os anexos ANTES de apagar o comando; reenviar os bytes originais mantém a resolução intacta.
+    arquivos = [await a.to_file() for a in anexos]
     try: await ctx.message.delete()
     except: pass
-    await send_chunked(ctx.channel, m)
+    if not arquivos:
+        return await send_chunked(ctx.channel, m)
+    partes = [m[i:i + 2000] for i in range(0, len(m), 2000)] or [None]
+    for p in partes[:-1]:
+        await ctx.channel.send(p)
+    await ctx.channel.send(partes[-1], files=arquivos)
 
 @bot.command()
 @commands.check(is_staff)

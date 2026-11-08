@@ -76,6 +76,30 @@ class TestSay:
         assert staff_ctx.channel.send.await_count == 3
 
 
+    async def test_anexo_e_reenviado_sem_alterar(self, main_mod, staff_ctx):
+        arq = MagicMock()
+        anexo = MagicMock()
+        anexo.to_file = AsyncMock(return_value=arq)
+        staff_ctx.message.attachments = [anexo]
+        await main_mod.say.callback(staff_ctx, m="legenda")
+        anexo.to_file.assert_awaited_once_with()
+        staff_ctx.channel.send.assert_awaited_once_with("legenda", files=[arq])
+
+    async def test_so_anexo_sem_texto(self, main_mod, staff_ctx):
+        arq = MagicMock()
+        anexo = MagicMock()
+        anexo.to_file = AsyncMock(return_value=arq)
+        staff_ctx.message.attachments = [anexo]
+        await main_mod.say.callback(staff_ctx)
+        staff_ctx.channel.send.assert_awaited_once_with(None, files=[arq])
+
+    async def test_sem_texto_e_sem_anexo_avisa(self, main_mod, staff_ctx):
+        staff_ctx.message.attachments = []
+        await main_mod.say.callback(staff_ctx)
+        staff_ctx.channel.send.assert_not_awaited()
+        staff_ctx.message.delete.assert_not_awaited()
+
+
 # ------------------------------------------------------------------- anuncio ---
 class TestAnuncio:
     async def test_off_e_on(self, main_mod, staff_ctx):
