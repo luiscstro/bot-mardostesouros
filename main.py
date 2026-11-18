@@ -1031,13 +1031,18 @@ async def ajuda(ctx):
             "`doffy!forcarteste` → Força a atualização do mercado.\n"
             "`doffy!simular` → Simula o mercado no chat atual sem salvar.\n"
             "`doffy!reroll <rank>` → Gira os dados e troca a fruta daquele rank.\n"
-            "`doffy!historico` → Vê as últimas frutas sorteadas (memória).\n\n"
+            "`doffy!historico` → Vê as últimas frutas sorteadas (memória)."
+        )
+        staff_excel = (
             "**Controle do Excel:**\n"
             "`doffy!posse <fruta>, <bando>` → Guarda a fruta com um bando.\n"
             "`doffy!cuspir <fruta>` → Limpa o dono e devolve a fruta ao mercado.\n"
             "`doffy!addfruta <rank> <fruta>, <fruta>...` → Cadastra frutas (várias de uma vez; uma linha por rank: `S: ...`).\n"
             "`doffy!rmfruta <fruta>` → Remove uma fruta da planilha (pede confirmação).\n"
-            "`doffy!diagnostico` → Mostra como o bot está lendo a planilha.\n\n"
+            "`doffy!diagnostico` → Mostra como o bot está lendo a planilha.\n"
+            "`doffy!painel` → Link do dashboard web (adicionar/remover frutas em massa)."
+        )
+        staff_admin = (
             "**Administração:**\n"
             "`doffy!anuncio on/off` → Liga ou desliga as notificações globais.\n"
             "`doffy!limpar X` → Apaga X mensagens do chat atual.\n"
@@ -1046,6 +1051,8 @@ async def ajuda(ctx):
             "`doffy!darcargo <@membro>` → Dá o cargo especial para o membro."
         )
         embed.add_field(name="🔒 Staff", value=staff, inline=False)
+        embed.add_field(name="​", value=staff_excel, inline=False)
+        embed.add_field(name="​", value=staff_admin, inline=False)
     
     await ctx.send(embed=embed)
 
@@ -1402,6 +1409,17 @@ async def diagnostico(ctx):
         emb.add_field(name="ℹ️ Linhas com texto ACIMA do cabeçalho (o bot não lê)",
                       value=_cortar("\n".join(f"L{n}: {' | '.join(c)}"[:120] for n, c in t["acima"][:8]), 1000), inline=False)
     await ctx.send(embed=emb)
+
+@bot.command(name="painel")
+@commands.check(is_staff)
+async def painel(ctx):
+    """Manda o link do dashboard web (a senha NUNCA é enviada no chat)."""
+    if not os.getenv("DASHBOARD_SENHA"):
+        return await ctx.send("⚠️ O dashboard está desligado (falta definir `DASHBOARD_SENHA` no host do bot).")
+    url = os.getenv("DASHBOARD_URL", "").strip()
+    if not url.lower().startswith(("http://", "https://")):
+        return await ctx.send("⚠️ O dashboard está ligado, mas falta definir `DASHBOARD_URL` (o endereço público dele) no host do bot.")
+    await ctx.send(f"🦩 **Painel das frutas:** <{url}>\nA senha é a mesma configurada no host (`DASHBOARD_SENHA`).")
 
 # Anexa a configuração segura ao bot
 bot.setup_hook = setup_hook
