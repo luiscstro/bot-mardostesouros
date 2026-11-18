@@ -217,6 +217,26 @@ class TestComandos:
         assert "diagnostico" in ctx.send.await_args.kwargs["embed"].description
 
 
+class TestPainel:
+    async def test_manda_o_link_e_nunca_a_senha(self, main_mod, staff_ctx, monkeypatch):
+        monkeypatch.setenv("DASHBOARD_SENHA", "segredo-xyz")
+        monkeypatch.setenv("DASHBOARD_URL", "https://doffy.discloud.app")
+        await main_mod.painel.callback(staff_ctx)
+        txt = staff_ctx.send.await_args.args[0]
+        assert "https://doffy.discloud.app" in txt and "segredo-xyz" not in txt
+
+    async def test_desligado_sem_senha(self, main_mod, staff_ctx, monkeypatch):
+        monkeypatch.delenv("DASHBOARD_SENHA", raising=False)
+        await main_mod.painel.callback(staff_ctx)
+        assert "desligado" in staff_ctx.send.await_args.args[0]
+
+    async def test_sem_url_avisa(self, main_mod, staff_ctx, monkeypatch):
+        monkeypatch.setenv("DASHBOARD_SENHA", "x")
+        monkeypatch.delenv("DASHBOARD_URL", raising=False)
+        await main_mod.painel.callback(staff_ctx)
+        assert "DASHBOARD_URL" in staff_ctx.send.await_args.args[0]
+
+
 # ----------------------------------------------------------------- dashboard ---
 class TestDashboard:
     @pytest.fixture
