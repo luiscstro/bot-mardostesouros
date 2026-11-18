@@ -500,7 +500,7 @@ class TestAjuda:
         await main_mod.ajuda.callback(staff_ctx)
         emb = staff_ctx.send.call_args.kwargs["embed"]
         texto = " ".join(f.value for f in emb.fields) + (emb.description or "")
-        conhecidos_sem_doc = {"say", "pl", "ajuda", "chat", "painel_racas", "check_pool"}
+        conhecidos_sem_doc = {"pl"}  # só o comando oculto do dono
         faltando = [c.name for c in main_mod.bot.commands
                     if f"doffy!{c.name}" not in texto and c.name not in conhecidos_sem_doc]
         assert faltando == []

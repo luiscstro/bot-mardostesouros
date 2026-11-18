@@ -11,6 +11,7 @@ import asyncio
 import re
 import io
 import copy
+import difflib
 import time
 import aiohttp
 import threading
@@ -1007,52 +1008,340 @@ async def reenviar(ctx, link_msg: str, link_canal: str):
         await ctx.send(f"❌ Erro ao enviar: {e}")
          
 # --- AJUDA E EVENTOS ---
+# Ajuda detalhada de cada comando: doffy!ajuda <comando>. Chave = nome do comando; "aliases" = outros nomes aceitos.
+# (Mantenha em dia: os testes avisam se um comando novo ficar sem entrada aqui.)
+AJUDA_DETALHES = {
+    "enc": {
+        "staff": False, "aliases": [],
+        "resumo": "Enciclopédia das Akuma no Mi: lista as frutas por rank, com 🟢 disponível ou ⚫ o status (quem tem/ingeriu).",
+        "uso": "doffy!enc [busca]",
+        "exemplos": [
+            ("doffy!enc", "todas as frutas, por rank, em páginas"),
+            ("doffy!enc s", "só as frutas do rank S (também c, b, a)"),
+            ("doffy!enc gomu", "frutas cujo nome contém \"gomu\""),
+            ("doffy!enc a12", "a fruta nº 12 do rank A"),
+        ],
+        "notas": [
+            "Cada página mostra 6 frutas. Use as reações ◀️ ▶️ para trocar de página (valem por 60s e só para quem pediu).",
+            "A busca ignora maiúsculas e espaços.",
+        ],
+    },
+    "fruta": {
+        "staff": False, "aliases": [],
+        "resumo": "Mostra os detalhes de uma fruta: rank, número e status atual.",
+        "uso": "doffy!fruta <nome | rank+número>",
+        "exemplos": [
+            ("doffy!fruta Mera Mera", "busca pelo nome (pode ser só um pedaço)"),
+            ("doffy!fruta a2", "fruta nº 2 do rank A"),
+        ],
+        "notas": [
+            "Se mais de uma fruta combinar com o nome, aparece a primeira. Use o nome completo ou rank+número (ex.: `a2`) para ser exato.",
+        ],
+    },
+    "proxima": {
+        "staff": False, "aliases": [],
+        "resumo": "Mostra quanto falta para a próxima atualização semanal das lojas.",
+        "uso": "doffy!proxima",
+        "exemplos": [("doffy!proxima", "ex.: \"Faltam: 3d 5h 20m\"")],
+        "notas": ["A atualização automática acontece todo domingo às 15:00 UTC (12:00 em Brasília)."],
+    },
+    "ingerir": {
+        "staff": False, "aliases": [],
+        "resumo": "Pede para comer uma fruta. A Staff precisa aprovar; depois disso a planilha é atualizada com o seu nome.",
+        "uso": "doffy!ingerir <nome | rank+número>",
+        "exemplos": [
+            ("doffy!ingerir Gomu Gomu", "pede para ingerir a Gomu Gomu"),
+            ("doffy!ingerir b4", "pede a fruta nº 4 do rank B"),
+        ],
+        "notas": [
+            "Um membro da Staff aprova reagindo com ✅ na mensagem do bot. O pedido expira em 1 hora.",
+            "Ao ser aprovada, o status da fruta vira \"Ingerida por <seu nick>\" e ela sai do sorteio das lojas.",
+        ],
+    },
+    "chat": {
+        "staff": False, "aliases": ["falar", "doflamingo"],
+        "resumo": "Conversa com o Doflamingo (IA), que responde em personagem.",
+        "uso": "doffy!chat <mensagem>",
+        "exemplos": [
+            ("doffy!chat Quem é você?", "o Doflamingo responde"),
+            ("@Doflamingo bom dia", "marcar o bot também funciona, sem o comando"),
+        ],
+        "notas": ["Respostas são curtas de propósito. Sem mensagem, ele reclama de você ficar calado."],
+    },
+    "ajuda": {
+        "staff": False, "aliases": [],
+        "resumo": "Mostra a lista de comandos ou os detalhes de um comando específico.",
+        "uso": "doffy!ajuda [comando]",
+        "exemplos": [
+            ("doffy!ajuda", "lista de todos os comandos que você pode usar"),
+            ("doffy!ajuda enc", "explica o comando enc, com exemplos"),
+        ],
+        "notas": ["Comandos da Staff só têm detalhes visíveis para a Staff."],
+    },
+    "forcarteste": {
+        "staff": True, "aliases": [],
+        "resumo": "Roda agora a atualização semanal das lojas C, B e A: sorteia novas frutas e edita as mensagens dos canais.",
+        "uso": "doffy!forcarteste",
+        "exemplos": [("doffy!forcarteste", "atualiza as lojas imediatamente")],
+        "notas": [
+            "É a atualização de verdade (para só testar, use `doffy!simular`).",
+            "Se os anúncios estiverem ligados (`doffy!anuncio`), também manda o aviso global no canal de anúncios.",
+            "Se a planilha estiver fora do ar, nada é alterado; tente de novo depois.",
+        ],
+    },
+    "simular": {
+        "staff": True, "aliases": [],
+        "resumo": "Simula uma virada do mercado no canal atual, sem mexer nas lojas oficiais nem no histórico.",
+        "uso": "doffy!simular",
+        "exemplos": [("doffy!simular", "mostra as 3 lojas sorteadas só neste chat")],
+        "notas": ["Ótimo para conferir a planilha e o sorteio antes da atualização de domingo."],
+    },
+    "reroll": {
+        "staff": True, "aliases": [],
+        "resumo": "Troca a fruta da loja de um rank: sorteia outra, ou coloca a que você escolher.",
+        "uso": "doffy!reroll <rank> [fruta]",
+        "exemplos": [
+            ("doffy!reroll A", "sorteia nova fruta para a loja A"),
+            ("doffy!reroll B Gomu Gomu no Mi", "coloca essa fruta na loja B"),
+        ],
+        "notas": [
+            "Ranks aceitos: C, B e A (a loja S não existe).",
+            "No sorteio automático, as últimas 3 frutas de cada rank não se repetem (veja `doffy!historico`).",
+            "Com o nome escolhido, o texto é usado do jeito que você digitou: escreva exatamente como quer que apareça.",
+        ],
+    },
+    "historico": {
+        "staff": True, "aliases": [],
+        "resumo": "Mostra as últimas frutas sorteadas em cada loja: o bot está proibido de sortear essas de novo.",
+        "uso": "doffy!historico",
+        "exemplos": [("doffy!historico", "até 3 frutas por rank (C, B e A)")],
+        "notas": [],
+    },
+    "check_pool": {
+        "staff": True, "aliases": [],
+        "resumo": "Lista as frutas disponíveis que podem aparecer no próximo sorteio, por rank.",
+        "uso": "doffy!check_pool",
+        "exemplos": [("doffy!check_pool", "mostra o pool de C, B, A e S com as contagens")],
+        "notas": ["Uma fruta só entra no pool se a coluna Status estiver vazia. Use `doffy!posse` ou `doffy!cuspir` para mudar isso."],
+    },
+    "posse": {
+        "staff": True, "aliases": [],
+        "resumo": "Marca na planilha que uma fruta está guardada com um bando. Ela sai do sorteio.",
+        "uso": "doffy!posse <fruta>, <bando>",
+        "exemplos": [
+            ("doffy!posse Mera Mera, Piratas do Sol", "status vira \"Em posse do bando Piratas do Sol\""),
+            ("doffy!posse a2, Bando do Zoro", "usa rank+número no lugar do nome"),
+        ],
+        "notas": ["A vírgula entre a fruta e o bando é obrigatória."],
+    },
+    "cuspir": {
+        "staff": True, "aliases": [],
+        "resumo": "Limpa o status de uma fruta na planilha: ela volta a ficar disponível e entra no sorteio.",
+        "uso": "doffy!cuspir <nome | rank+número>",
+        "exemplos": [
+            ("doffy!cuspir Mera Mera", "a Mera Mera volta ao mercado"),
+            ("doffy!cuspir a2", "o mesmo, usando rank+número"),
+        ],
+        "notas": [],
+    },
+    "addfruta": {
+        "staff": True, "aliases": ["addfrutas"],
+        "resumo": "Cadastra uma ou várias frutas novas na planilha, em um ou vários ranks de uma vez.",
+        "uso": "doffy!addfruta <rank> <fruta>, <fruta>, ...",
+        "exemplos": [
+            ("doffy!addfruta S Mera Mera no Mi", "uma fruta no rank S"),
+            ("doffy!addfruta A Bara Bara no Mi, Goro Goro no Mi", "várias frutas, separadas por vírgula"),
+            ("doffy!addfruta S: Fruta 1, Fruta 2\nA: Fruta 3\nB: Fruta 4", "ranks diferentes: uma linha por rank"),
+        ],
+        "notas": [
+            "O número de cada fruta é gerado sozinho (o próximo livre do rank) e elas entram no fim da planilha.",
+            "Nomes que já existem são ignorados (não diferencia maiúsculas nem espaços). Máximo de 300 por vez.",
+            "O nome não pode começar com `=`, `+`, `-` ou `@` nem passar de 100 letras.",
+        ],
+    },
+    "rmfruta": {
+        "staff": True, "aliases": ["removerfruta"],
+        "resumo": "Remove uma fruta da planilha (apaga a linha). Pede confirmação antes.",
+        "uso": "doffy!rmfruta <nome | rank+número>",
+        "exemplos": [
+            ("doffy!rmfruta Fruta Teste 1", "acha a fruta e pede confirmação"),
+            ("doffy!rmfruta s44", "usa rank+número, útil quando o nome é parecido com outro"),
+        ],
+        "notas": [
+            "Reaja com ✅ em até 60s para confirmar. Só quem digitou o comando pode confirmar.",
+            "Se mais de uma fruta combinar, o bot lista as opções e não apaga nada: seja mais específico.",
+            "Os números das outras frutas não mudam, então pode sobrar um \"buraco\" na sequência.",
+        ],
+    },
+    "diagnostico": {
+        "staff": True, "aliases": ["diag"],
+        "resumo": "Mostra como o bot está lendo a planilha. Use quando uma fruta não aparece no `doffy!enc`.",
+        "uso": "doffy!diagnostico",
+        "exemplos": [("doffy!diagnostico", "aba lida, total por rank, últimas linhas e problemas encontrados")],
+        "notas": [
+            "Avisa de linhas com rank inválido (fora de C/B/A/S), linhas sem nome e textos acima do cabeçalho, que o bot não lê.",
+        ],
+    },
+    "anuncio": {
+        "staff": True, "aliases": [],
+        "resumo": "Liga ou desliga o aviso global que o bot manda quando as lojas são atualizadas.",
+        "uso": "doffy!anuncio <on | off>",
+        "exemplos": [
+            ("doffy!anuncio off", "desliga os avisos"),
+            ("doffy!anuncio on", "liga os avisos"),
+            ("doffy!anuncio", "só mostra se está ligado ou desligado"),
+        ],
+        "notas": ["O estado fica salvo e continua depois de o bot reiniciar."],
+    },
+    "say": {
+        "staff": True, "aliases": [],
+        "resumo": "Faz o bot falar no canal atual e apaga a sua mensagem do comando. Aceita imagens anexadas.",
+        "uso": "doffy!say <texto>  (e/ou anexe imagens)",
+        "exemplos": [
+            ("doffy!say Fuffuffuffu! Bem-vindos.", "o bot envia só o texto"),
+            ("doffy!say Olhem isto! (com imagem anexada)", "o bot reenvia o texto e a imagem na resolução original"),
+        ],
+        "notas": ["Textos acima de 2000 caracteres são divididos em várias mensagens."],
+    },
+    "limpar": {
+        "staff": True, "aliases": [],
+        "resumo": "Apaga as últimas mensagens do canal atual.",
+        "uso": "doffy!limpar [quantidade]",
+        "exemplos": [
+            ("doffy!limpar 20", "apaga as últimas 20 mensagens"),
+            ("doffy!limpar", "sem número, apaga 100"),
+        ],
+        "notas": ["Não tem como desfazer. O seu próprio comando também é apagado."],
+    },
+    "editar": {
+        "staff": True, "aliases": [],
+        "resumo": "Troca o texto de uma mensagem que o próprio bot enviou.",
+        "uso": "doffy!editar <link ou ID da mensagem> <novo texto>",
+        "exemplos": [("doffy!editar https://discord.com/channels/1/2/3 Texto novo", "a mensagem passa a ter o texto novo")],
+        "notas": [
+            "Só funciona em mensagens do bot (para pegar o link: botão direito na mensagem → Copiar link da mensagem).",
+            "O comando é apagado depois de editar.",
+        ],
+    },
+    "reenviar": {
+        "staff": True, "aliases": [],
+        "resumo": "Copia uma mensagem (texto, anexos e embeds) para outro canal.",
+        "uso": "doffy!reenviar <link da mensagem> <link ou #canal de destino>",
+        "exemplos": [
+            ("doffy!reenviar https://discord.com/channels/1/2/3 #avisos", "copia a mensagem para #avisos"),
+            ("doffy!reenviar https://discord.com/channels/1/2/3 https://discord.com/channels/1/9", "o destino também pode ser o link do canal"),
+        ],
+        "notas": ["O comando original é apagado e o bot confirma com a menção do canal de destino."],
+    },
+    "darcargo": {
+        "staff": True, "aliases": [],
+        "resumo": "Dá ao membro mencionado o cargo especial configurado no bot.",
+        "uso": "doffy!darcargo <@membro>",
+        "exemplos": [("doffy!darcargo @Fulano", "Fulano recebe o cargo")],
+        "notas": ["Se o membro já tiver o cargo, o bot avisa. O cargo do bot precisa estar acima dele na hierarquia."],
+    },
+    "painel_racas": {
+        "staff": True, "aliases": [],
+        "resumo": "Posta o painel do Despertar de Raças: um botão que abre um canal privado para o teste de Lunariano.",
+        "uso": "doffy!painel_racas",
+        "exemplos": [("doffy!painel_racas", "envia o painel com o botão e apaga o seu comando")],
+        "notas": [
+            "No canal privado, o jogador rola um d100: 90 ou mais desperta como Lunariano. Cada jogador só rola uma vez.",
+            "Exige um dos cargos de Staff do módulo de raças.",
+        ],
+    },
+}
+AJUDA_ALIASES = {a: n for n, d in AJUDA_DETALHES.items() for a in d["aliases"]}
+
+
+def _embed_ajuda_comando(nome, info):
+    titulo = f"📘 doffy!{nome}" + ("  ·  🔒 Staff" if info["staff"] else "")
+    emb = discord.Embed(title=titulo, description=info["resumo"], color=discord.Color.dark_purple())
+    emb.add_field(name="Como usar", value=f"```\n{info['uso']}\n```", inline=False)
+    exemplos = "\n".join(f"`{cmd}`\n↳ {explica}" if "\n" not in cmd else f"```\n{cmd}\n```↳ {explica}"
+                         for cmd, explica in info["exemplos"])
+    emb.add_field(name="Exemplos", value=exemplos, inline=False)
+    if info["notas"]:
+        emb.add_field(name="Bom saber", value="\n".join(f"• {n}" for n in info["notas"]), inline=False)
+    if info["aliases"]:
+        emb.add_field(name="Também funciona como", value=", ".join(f"`doffy!{a}`" for a in info["aliases"]), inline=False)
+    emb.set_footer(text="doffy!ajuda → lista de todos os comandos")
+    return emb
+
+
+async def _ajuda_comando(ctx, pedido):
+    nome = pedido.strip().lower()
+    if nome.startswith("doffy!"):
+        nome = nome[len("doffy!"):]
+    nome = AJUDA_ALIASES.get(nome, nome)
+    info = AJUDA_DETALHES.get(nome)
+    if info is None:
+        possiveis = [n for n, d in AJUDA_DETALHES.items() if not d["staff"] or is_staff(ctx)]
+        sugestoes = difflib.get_close_matches(nome, possiveis, n=3, cutoff=0.5)
+        dica = f" Quis dizer {', '.join(f'`doffy!{s}`' for s in sugestoes)}?" if sugestoes else ""
+        eco = nome[:40].replace("`", "'")  # texto do usuário: sem crases e sem permitir menções
+        return await ctx.send(f"❌ Não conheço o comando `{eco}`.{dica} Use `doffy!ajuda` para ver a lista.",
+                              allowed_mentions=discord.AllowedMentions.none())
+    if info["staff"] and not is_staff(ctx):
+        return await ctx.send(f"🔒 `doffy!{nome}` é um comando exclusivo da Staff.")
+    await ctx.send(embed=_embed_ajuda_comando(nome, info))
+
+
 @bot.command(name="ajuda")
-async def ajuda(ctx):
+async def ajuda(ctx, *, comando: str = None):
+    if comando:
+        return await _ajuda_comando(ctx, comando)
+
     embed = discord.Embed(
         title="🧶 Guia do Doflamingo",
-        description="Lista de todas as mercadorias e comandos disponíveis.",
+        description="Lista de todas as mercadorias e comandos disponíveis.\n"
+                    "💡 Quer detalhes e exemplos de um comando? Use **`doffy!ajuda <comando>`** (ex.: `doffy!ajuda enc`).",
         color=discord.Color.dark_purple()
     )
-    
+
     # Texto dos comandos públicos
     publicos = (
-        "`doffy!enc` → Vê todas as frutas.\n"
+        "`doffy!enc [busca]` → Vê as frutas (busque por rank, nome ou nº).\n"
         "`doffy!fruta <nome>` → Detalhes de uma fruta.\n"
         "`doffy!proxima` → Tempo para a próxima atualização.\n"
-        "`doffy!ingerir <fruta>` → Pede para comer uma fruta (Exige aprovação Staff)."
+        "`doffy!ingerir <fruta>` → Pede para comer uma fruta (Exige aprovação Staff).\n"
+        "`doffy!chat <mensagem>` → Conversa com o Doflamingo (ou marque o bot).\n"
+        "`doffy!ajuda [comando]` → Esta ajuda, ou os detalhes de um comando."
     )
     embed.add_field(name="📖 Público", value=publicos, inline=False)
-    
+
     # Texto dos comandos da Staff
     if is_staff(ctx):
         staff = (
             "**Mercado & Testes:**\n"
             "`doffy!forcarteste` → Força a atualização do mercado.\n"
             "`doffy!simular` → Simula o mercado no chat atual sem salvar.\n"
-            "`doffy!reroll <rank>` → Gira os dados e troca a fruta daquele rank.\n"
-            "`doffy!historico` → Vê as últimas frutas sorteadas (memória)."
+            "`doffy!reroll <rank> [fruta]` → Troca a fruta da loja daquele rank.\n"
+            "`doffy!historico` → Vê as últimas frutas sorteadas (memória).\n"
+            "`doffy!check_pool` → Vê as frutas que podem entrar no próximo sorteio."
         )
         staff_excel = (
             "**Controle do Excel:**\n"
             "`doffy!posse <fruta>, <bando>` → Guarda a fruta com um bando.\n"
             "`doffy!cuspir <fruta>` → Limpa o dono e devolve a fruta ao mercado.\n"
-            "`doffy!addfruta <rank> <fruta>, <fruta>...` → Cadastra frutas (várias de uma vez; uma linha por rank: `S: ...`).\n"
+            "`doffy!addfruta <rank> <fruta>, ...` → Cadastra frutas (uma linha por rank: `S: ...`).\n"
             "`doffy!rmfruta <fruta>` → Remove uma fruta da planilha (pede confirmação).\n"
             "`doffy!diagnostico` → Mostra como o bot está lendo a planilha."
         )
         staff_admin = (
             "**Administração:**\n"
             "`doffy!anuncio on/off` → Liga ou desliga as notificações globais.\n"
+            "`doffy!say <texto>` → O bot fala no canal (aceita imagens).\n"
             "`doffy!limpar X` → Apaga X mensagens do chat atual.\n"
-            "`doffy!editar <link>` → Altera o texto de uma mensagem do bot.\n"
+            "`doffy!editar <link> <texto>` → Altera o texto de uma mensagem do bot.\n"
             "`doffy!reenviar <link> <canal>` → Copia e cola mensagens.\n"
-            "`doffy!darcargo <@membro>` → Dá o cargo especial para o membro."
+            "`doffy!darcargo <@membro>` → Dá o cargo especial para o membro.\n"
+            "`doffy!painel_racas` → Posta o painel do Despertar de Raças."
         )
         embed.add_field(name="🔒 Staff", value=staff, inline=False)
         embed.add_field(name="​", value=staff_excel, inline=False)
         embed.add_field(name="​", value=staff_admin, inline=False)
-    
+
     await ctx.send(embed=embed)
 
 @bot.command()
