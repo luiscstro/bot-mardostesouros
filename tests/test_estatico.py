@@ -87,7 +87,7 @@ def test_dependencias_de_terceiros_estao_no_requirements():
         reqs = {l.strip().lower().replace("_", "-") for l in f if l.strip() and not l.startswith("#")}
     reqs_norm = {r.split("==")[0].split(">=")[0] for r in reqs}
     faltando = set()
-    for arq in ["main.py", "ai.py", "racas.py", "dashboard.py"]:
+    for arq in ["main.py", "ai.py", "racas.py"]:
         with open(os.path.join(ROOT, arq), encoding="utf-8") as f:
             for no in ast.walk(ast.parse(f.read())):
                 nomes = [a.name.split(".")[0] for a in no.names] if isinstance(no, ast.Import) else \
@@ -103,14 +103,14 @@ def test_dependencias_de_terceiros_estao_no_requirements():
 
 def test_modulos_do_bot_so_importam_stdlib_e_dependencias_declaradas():
     stdlib = set(sys.stdlib_module_names)
-    permitidos = {"discord", "gspread", "oauth2client", "groq", "dotenv", "aiohttp", "flask", "werkzeug"}
-    for arq in ["main.py", "ai.py", "racas.py", "dashboard.py"]:
+    permitidos = {"discord", "gspread", "oauth2client", "groq", "dotenv", "aiohttp"}
+    for arq in ["main.py", "ai.py", "racas.py"]:
         with open(os.path.join(ROOT, arq), encoding="utf-8") as f:
             for no in ast.walk(ast.parse(f.read())):
                 nomes = [a.name.split(".")[0] for a in no.names] if isinstance(no, ast.Import) else \
                         [no.module.split(".")[0]] if isinstance(no, ast.ImportFrom) and no.module else []
                 for n in nomes:
-                    assert n in stdlib or n in permitidos or n in {"ai", "racas", "dashboard"}, f"{arq} importa {n}"
+                    assert n in stdlib or n in permitidos or n in {"ai", "racas"}, f"{arq} importa {n}"
 
 
 # --------------------------------------------------------- limites do Discord ---

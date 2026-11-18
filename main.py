@@ -115,7 +115,7 @@ class EstoqueCog(commands.Cog):
         self.bot = bot
         self.sheet = None
         self.service_account_email = None
-        self._lock = threading.RLock()  # gspread não é thread-safe; bot e dashboard usam a mesma planilha
+        self._lock = threading.RLock()  # gspread não é thread-safe; comandos concorrentes usam a mesma planilha
         self.scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets', "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
         self.connect_gsheets()
 
@@ -220,7 +220,7 @@ class EstoqueCog(commands.Cog):
     def _fetch_sync(self):
         return [{k: f[k] for k in ("rank", "numero", "nome", "status")} for f in self._tabela_sync()["frutas"]]
 
-    # ---------- ESCRITA (usada pelos comandos do bot e pelo dashboard) ----------
+    # ---------- ESCRITA (usada pelos comandos do bot) ----------
     def _erro_escrita(self, e):
         if isinstance(e, gspread.exceptions.APIError):
             status = getattr(getattr(e, "response", None), "status_code", None)
@@ -1039,8 +1039,7 @@ async def ajuda(ctx):
             "`doffy!cuspir <fruta>` → Limpa o dono e devolve a fruta ao mercado.\n"
             "`doffy!addfruta <rank> <fruta>, <fruta>...` → Cadastra frutas (várias de uma vez; uma linha por rank: `S: ...`).\n"
             "`doffy!rmfruta <fruta>` → Remove uma fruta da planilha (pede confirmação).\n"
-            "`doffy!diagnostico` → Mostra como o bot está lendo a planilha.\n"
-            "`doffy!painel` → Link do dashboard web (adicionar/remover frutas em massa)."
+            "`doffy!diagnostico` → Mostra como o bot está lendo a planilha."
         )
         staff_admin = (
             "**Administração:**\n"
@@ -1104,14 +1103,7 @@ async def setup_hook():
     except Exception as e:
         print(f"❌ Erro ao carregar Raças: {e}")
 
-    # 4. Dashboard web (só sobe se DASHBOARD_SENHA estiver definida)
-    try:
-        from dashboard import iniciar_dashboard
-        iniciar_dashboard(bot.get_cog("EstoqueCog"))
-    except Exception as e:
-        print(f"❌ Erro ao iniciar o dashboard: {e}")
-
-    # 5. Inicia a rotina semanal de atualização
+    # 4. Inicia a rotina semanal de atualização
     if not auto_update.is_running(): 
         auto_update.start()
 
@@ -1409,17 +1401,6 @@ async def diagnostico(ctx):
         emb.add_field(name="ℹ️ Linhas com texto ACIMA do cabeçalho (o bot não lê)",
                       value=_cortar("\n".join(f"L{n}: {' | '.join(c)}"[:120] for n, c in t["acima"][:8]), 1000), inline=False)
     await ctx.send(embed=emb)
-
-@bot.command(name="painel")
-@commands.check(is_staff)
-async def painel(ctx):
-    """Manda o link do dashboard web (a senha NUNCA é enviada no chat)."""
-    if not os.getenv("DASHBOARD_SENHA"):
-        return await ctx.send("⚠️ O dashboard está desligado (falta definir `DASHBOARD_SENHA` no host do bot).")
-    url = os.getenv("DASHBOARD_URL", "").strip()
-    if not url.lower().startswith(("http://", "https://")):
-        return await ctx.send("⚠️ O dashboard está ligado, mas falta definir `DASHBOARD_URL` (o endereço público dele) no host do bot.")
-    await ctx.send(f"🦩 **Painel das frutas:** <{url}>\nA senha é a mesma configurada no host (`DASHBOARD_SENHA`).")
 
 # Anexa a configuração segura ao bot
 bot.setup_hook = setup_hook
