@@ -10,7 +10,7 @@ from discord.ext import commands
 from conftest import api_error, http_exc, make_channel, make_ctx, make_role, tabela
 
 STAFF_CMDS = ["say", "forcarteste", "anuncio", "reroll", "simular", "limpar", "editar",
-              "reenviar", "darcargo", "historico", "posse", "cuspir", "addfruta", "rmfruta", "diagnostico", "painel"]
+              "reenviar", "darcargo", "historico", "posse", "cuspir", "addfruta", "rmfruta", "diagnostico"]
 
 
 # ------------------------------------------------------------------ is_staff ---
