@@ -13,6 +13,7 @@ import io
 import copy
 import time
 import aiohttp
+import threading
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -48,11 +49,73 @@ def _erro_transitorio(exc):
     status = getattr(getattr(exc, "response", None), "status_code", None)
     return status == 429 or (isinstance(status, int) and status >= 500)
 
+RANKS = ("C", "B", "A", "S")
+MAX_FRUTAS_POR_LOTE = 300
+
+class ErroPlanilha(Exception):
+    """Erro ao ESCREVER na planilha, com mensagem já pronta para mostrar ao usuário."""
+
+def _normalizar_rank(valor):
+    """'s', ' S ', 'Rank S' -> 'S'. Qualquer outra coisa volta só em maiúsculas."""
+    r = re.sub(r"\s+", " ", str(valor)).strip().upper()
+    m = re.fullmatch(r"(?:RANK\s*)?([CBAS])", r)
+    return m.group(1) if m else r
+
+def _chave_nome(nome):
+    return re.sub(r"\s+", "", str(nome)).lower()
+
+def _seguro(texto):
+    """Impede que um texto vire fórmula na planilha (=, +, -, @ no início)."""
+    texto = str(texto).strip()
+    return "'" + texto if texto[:1] in ("=", "+", "-", "@") else texto
+
+_LINHA_COM_RANK = re.compile(r"^\s*(?:rank\s+)?([CBAScbas])\s*(?:[:\-–]\s*|\s+)(.*)$", re.I)
+
+def parse_lote(texto, rank_padrao=None):
+    """Lê texto de cadastro em massa. Retorna (itens, erros).
+
+    Cada linha pode começar com o rank ("S: Fruta 1, Fruta 2" ou "A Fruta 3"); linhas sem rank
+    usam o último rank visto (ou rank_padrao). Frutas separadas por vírgula, ';' ou quebra de linha.
+    """
+    itens, erros = [], []
+    rank_atual = _normalizar_rank(rank_padrao) if rank_padrao else None
+    if rank_atual not in RANKS:
+        rank_atual = None
+    for linha in re.split(r"[\r\n;]+", texto or ""):
+        linha = linha.strip()
+        if not linha:
+            continue
+        m = _LINHA_COM_RANK.match(linha)
+        if m:
+            rank_atual, resto = m.group(1).upper(), m.group(2)
+        else:
+            resto = linha
+        for nome in resto.split(","):
+            nome = re.sub(r"\s+", " ", nome).strip()
+            if not nome:
+                continue
+            if not rank_atual:
+                erros.append(f"Sem rank para `{nome}`")
+                continue
+            itens.append({"rank": rank_atual, "nome": nome})
+    return itens, erros
+
+def buscar_frutas(frutas, busca):
+    """Acha frutas pela busca (nome parcial, 'a2' = rank+número). Nome exato tem prioridade."""
+    b = _chave_nome(busca)
+    if not b:
+        return []
+    exatas = [f for f in frutas if _chave_nome(f["nome"]) == b or b == f"{f['rank'].lower()}{f['numero']}"]
+    if exatas:
+        return exatas
+    return [f for f in frutas if b in _chave_nome(f["nome"])]
+
 class EstoqueCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.sheet = None
         self.service_account_email = None
+        self._lock = threading.RLock()  # gspread não é thread-safe; bot e dashboard usam a mesma planilha
         self.scope = ["https://spreadsheets.google.com/feeds", 'https://www.googleapis.com/auth/spreadsheets', "https://www.googleapis.com/auth/drive.file", "https://www.googleapis.com/auth/drive"]
         self.connect_gsheets()
 
@@ -76,64 +139,190 @@ class EstoqueCog(commands.Cog):
 
     def _ler_valores(self):
         """Lê a aba inteira; tenta reconectar e repete em erros transitórios. Levanta PlanilhaIndisponivel."""
-        if not self.sheet: self.connect_gsheets()
-        if not self.sheet:
-            raise PlanilhaIndisponivel("planilha não conectada")
-        tentativas = len(SHEETS_ESPERA_RETRY) + 1
-        for i in range(tentativas):
-            try:
-                return self.sheet.get_all_values()
-            except gspread.exceptions.APIError as e:
-                if _erro_transitorio(e) and i < tentativas - 1:
-                    time.sleep(SHEETS_ESPERA_RETRY[i])
-                    continue
-                raise PlanilhaIndisponivel(str(e)) from e
-            except Exception as e:
-                raise PlanilhaIndisponivel(str(e)) from e
+        with self._lock:
+            if not self.sheet: self.connect_gsheets()
+            if not self.sheet:
+                raise PlanilhaIndisponivel("planilha não conectada")
+            tentativas = len(SHEETS_ESPERA_RETRY) + 1
+            for i in range(tentativas):
+                try:
+                    return self.sheet.get_all_values()
+                except gspread.exceptions.APIError as e:
+                    if _erro_transitorio(e) and i < tentativas - 1:
+                        time.sleep(SHEETS_ESPERA_RETRY[i])
+                        continue
+                    raise PlanilhaIndisponivel(str(e)) from e
+                except Exception as e:
+                    raise PlanilhaIndisponivel(str(e)) from e
 
-    def _fetch_sync(self):
+    def _estrutura(self, data):
+        """Acha o cabeçalho e as colunas. Retorna (idx_head, head, colunas)."""
+        idx_head = 0
+        for i, r in enumerate(data):
+            r_low = [str(c).lower() for c in r]
+            if "rank" in r_low and "nome" in r_low:
+                idx_head = i
+                break
+
+        head = [h.lower().strip() for h in data[idx_head]]
+        i_rank = head.index("rank") if "rank" in head else 0
+        i_nome = head.index("nome") if "nome" in head else 2
+        i_stat = head.index("status") if "status" in head else 4
+        i_num = 1
+        for x in ["n°", "nº", "numero", "num"]:
+            if x in head:
+                i_num = head.index(x)
+                break
+        return idx_head, head, {"rank": i_rank, "nome": i_nome, "status": i_stat, "num": i_num}
+
+    def _tabela_sync(self):
+        """Lê a planilha e devolve dict(frutas=[...com 'linha' e 'numero_raw'], head, colunas)."""
         data = self._ler_valores()
         try:
-            if not data: return []
-            
-            idx_head = 0
-            for i, r in enumerate(data):
-                r_low = [str(c).lower() for c in r]
-                if "rank" in r_low and "nome" in r_low:
-                    idx_head = i
-                    break
-            
-            head = [h.lower().strip() for h in data[idx_head]]
-            rows = data[idx_head+1:]
-            
-            i_rank = head.index("rank") if "rank" in head else 0
-            i_nome = head.index("nome") if "nome" in head else 2
-            i_stat = head.index("status") if "status" in head else 4
-            i_num = 1
-            for x in ["n°", "nº", "numero", "num"]:
-                if x in head: 
-                    i_num = head.index(x)
-                    break
-
+            if not data:
+                return {"frutas": [], "head": [], "colunas": None, "idx_head": 0, "total": 0, "acima": []}
+            idx_head, head, col = self._estrutura(data)
+            acima = [(n, [c for c in r if str(c).strip()]) for n, r in enumerate(data[:idx_head], start=1) if any(r)]
             frutas = []
-            for r in rows:
+            ultimo_rank = ""
+            for n, r in enumerate(data[idx_head + 1:], start=idx_head + 2):  # n = nº da linha na planilha (1-based)
                 if not any(r): continue
-                if len(r) <= max(i_rank, i_nome, i_stat, i_num): r += [""] * 10
-                
-                raw_num = r[i_num].strip()
+                r = list(r)
+                if len(r) <= max(col.values()): r += [""] * 10
+
+                raw_num = r[col["num"]].strip()
                 num_match = re.search(r'\d+', raw_num)
                 clean_num = num_match.group() if num_match else raw_num
 
+                nome = r[col["nome"]].strip()
+                rank = _normalizar_rank(r[col["rank"]])
+                if rank == "RANK" and nome.lower() == "nome":
+                    continue  # cabeçalho repetido no meio da tabela
+                if rank:
+                    ultimo_rank = rank
+                elif nome:
+                    rank = ultimo_rank  # célula de rank mesclada/vazia: herda o rank da linha de cima
+
                 frutas.append({
-                    "rank": r[i_rank].strip().upper(),
-                    "numero": clean_num, 
-                    "nome": r[i_nome].strip(),
-                    "status": r[i_stat].strip().lower()
+                    "rank": rank,
+                    "numero": clean_num,
+                    "nome": nome,
+                    "status": r[col["status"]].strip().lower(),
+                    "linha": n,
+                    "numero_raw": raw_num,
                 })
-            return frutas
+            return {"frutas": frutas, "head": head, "colunas": col, "idx_head": idx_head + 1,
+                    "total": len(data), "acima": acima}
         except Exception as e:
             print(f"Erro ao interpretar a planilha: {e}")
             raise PlanilhaIndisponivel(f"formato inesperado: {e}") from e
+
+    def _fetch_sync(self):
+        return [{k: f[k] for k in ("rank", "numero", "nome", "status")} for f in self._tabela_sync()["frutas"]]
+
+    # ---------- ESCRITA (usada pelos comandos do bot e pelo dashboard) ----------
+    def _erro_escrita(self, e):
+        if isinstance(e, gspread.exceptions.APIError):
+            status = getattr(getattr(e, "response", None), "status_code", None)
+            if status == 403:
+                email = self.service_account_email or "a conta de serviço do bot"
+                return ErroPlanilha(f"Sem permissão para editar a planilha. Compartilhe como Editor com: {email}")
+            return ErroPlanilha(f"O Google recusou a operação (HTTP {status}). Tente de novo em instantes.")
+        return ErroPlanilha(f"Erro ao escrever na planilha: {e}")
+
+    def _linha_atual(self, tabela, linha, nome_esperado):
+        for f in tabela["frutas"]:
+            if f["linha"] == linha and f["nome"] == nome_esperado:
+                return f
+        raise ErroPlanilha("A planilha mudou desde que você abriu a lista. Atualize e tente de novo.")
+
+    def adicionar_sync(self, itens):
+        """Adiciona frutas no fim da planilha, numerando por rank. Retorna dict(adicionadas, duplicadas, rejeitadas)."""
+        with self._lock:
+            tabela = self._tabela_sync()
+            col, head = tabela["colunas"], tabela["head"]
+            if col is None:
+                raise ErroPlanilha("A planilha está vazia (sem cabeçalho Rank/Nome).")
+            existentes = {_chave_nome(f["nome"]) for f in tabela["frutas"]}
+            proximo, modelo = {}, {}
+            for f in tabela["frutas"]:
+                try: n = int(f["numero"])
+                except ValueError: continue
+                if n >= proximo.get(f["rank"], 0):
+                    proximo[f["rank"]] = n
+                    modelo[f["rank"]] = f["numero_raw"]
+
+            adicionadas, duplicadas, rejeitadas, linhas = [], [], [], []
+            for it in itens:
+                rank = _normalizar_rank(it.get("rank", ""))
+                nome = re.sub(r"\s+", " ", str(it.get("nome", ""))).strip()
+                if rank not in RANKS:
+                    rejeitadas.append(f"{nome or '?'}: rank inválido `{it.get('rank')}`"); continue
+                if not nome or len(nome) > 100:
+                    rejeitadas.append(f"{nome[:30] or '?'}: nome vazio ou longo demais"); continue
+                if nome[0] in "=+-@":
+                    rejeitadas.append(f"{nome}: nome não pode começar com `{nome[0]}`"); continue
+                if _chave_nome(nome) in existentes:
+                    duplicadas.append(nome); continue
+                existentes.add(_chave_nome(nome))
+                num = proximo.get(rank, 0) + 1
+                proximo[rank] = num
+                bruto = modelo.get(rank, "")
+                if re.search(r"\D", bruto) and re.search(r"\d+", bruto):  # mantém o formato ('Nº 5', '#5'...)
+                    num_txt = re.sub(r"\d+", str(num), bruto, count=1)
+                else:
+                    num_txt = str(num)
+                linha = [""] * max(len(head), max(col.values()) + 1)
+                linha[col["rank"]], linha[col["num"]], linha[col["nome"]] = rank, num_txt, nome
+                linhas.append(linha)
+                adicionadas.append({"rank": rank, "numero": str(num), "nome": nome})
+
+            if linhas:
+                try:
+                    self.sheet.append_rows(linhas, value_input_option="USER_ENTERED", insert_data_option="INSERT_ROWS")
+                except Exception as e:
+                    raise self._erro_escrita(e) from e
+            return {"adicionadas": adicionadas, "duplicadas": duplicadas, "rejeitadas": rejeitadas}
+
+    def remover_sync(self, linha, nome_esperado):
+        """Apaga a linha da fruta (confere o nome antes, pois os números de linha mudam)."""
+        with self._lock:
+            f = self._linha_atual(self._tabela_sync(), linha, nome_esperado)
+            try:
+                self.sheet.delete_rows(f["linha"])
+            except Exception as e:
+                raise self._erro_escrita(e) from e
+            return f
+
+    def editar_sync(self, linha, nome_esperado, nome=None, status=None):
+        """Troca o nome e/ou o status de uma fruta."""
+        with self._lock:
+            tabela = self._tabela_sync()
+            f = self._linha_atual(tabela, linha, nome_esperado)
+            col = tabela["colunas"]
+            try:
+                if nome is not None and nome.strip() != f["nome"]:
+                    nome = re.sub(r"\s+", " ", nome).strip()
+                    if not nome or nome[0] in "=+-@" or len(nome) > 100:
+                        raise ErroPlanilha("Nome inválido.")
+                    if any(_chave_nome(o["nome"]) == _chave_nome(nome) and o["linha"] != linha for o in tabela["frutas"]):
+                        raise ErroPlanilha(f"Já existe uma fruta chamada {nome}.")
+                    self.sheet.update_cell(linha, col["nome"] + 1, nome)
+                if status is not None:
+                    self.sheet.update_cell(linha, col["status"] + 1, _seguro(status) if status.strip() else "")
+            except ErroPlanilha:
+                raise
+            except Exception as e:
+                raise self._erro_escrita(e) from e
+
+    async def adicionar_frutas(self, itens):
+        return await asyncio.to_thread(self.adicionar_sync, itens)
+
+    async def remover_fruta(self, linha, nome):
+        return await asyncio.to_thread(self.remover_sync, linha, nome)
+
+    async def get_tabela(self):
+        return await asyncio.to_thread(self._tabela_sync)
 
     async def get_frutas(self):
         return await asyncio.to_thread(self._fetch_sync)
@@ -154,6 +343,9 @@ class EstoqueCog(commands.Cog):
             if f['rank'] in tot: tot[f['rank']] += 1
             
         resumo = f"📊 **Frutas Existentes**\nC: `{tot['C']}` | B: `{tot['B']}` | A: `{tot['A']}` | S: `{tot['S']}`"
+        invalidas = sum(1 for f in fs if f['rank'] not in tot)
+        if invalidas:
+            resumo += f"\n⚠️ `{invalidas}` linha(s) com rank inválido na planilha — use `doffy!diagnostico`."
 
         if busca:
             b_raw = busca.lower().strip()
@@ -842,7 +1034,10 @@ async def ajuda(ctx):
             "`doffy!historico` → Vê as últimas frutas sorteadas (memória).\n\n"
             "**Controle do Excel:**\n"
             "`doffy!posse <fruta>, <bando>` → Guarda a fruta com um bando.\n"
-            "`doffy!cuspir <fruta>` → Limpa o dono e devolve a fruta ao mercado.\n\n"
+            "`doffy!cuspir <fruta>` → Limpa o dono e devolve a fruta ao mercado.\n"
+            "`doffy!addfruta <rank> <fruta>, <fruta>...` → Cadastra frutas (várias de uma vez; uma linha por rank: `S: ...`).\n"
+            "`doffy!rmfruta <fruta>` → Remove uma fruta da planilha (pede confirmação).\n"
+            "`doffy!diagnostico` → Mostra como o bot está lendo a planilha.\n\n"
             "**Administração:**\n"
             "`doffy!anuncio on/off` → Liga ou desliga as notificações globais.\n"
             "`doffy!limpar X` → Apaga X mensagens do chat atual.\n"
@@ -902,7 +1097,14 @@ async def setup_hook():
     except Exception as e:
         print(f"❌ Erro ao carregar Raças: {e}")
 
-    # 4. Inicia a rotina semanal de atualização
+    # 4. Dashboard web (só sobe se DASHBOARD_SENHA estiver definida)
+    try:
+        from dashboard import iniciar_dashboard
+        iniciar_dashboard(bot.get_cog("EstoqueCog"))
+    except Exception as e:
+        print(f"❌ Erro ao iniciar o dashboard: {e}")
+
+    # 5. Inicia a rotina semanal de atualização
     if not auto_update.is_running(): 
         auto_update.start()
 
@@ -1090,6 +1292,115 @@ async def historico_frutas(ctx):
         else:
             emb.add_field(name=f"Rank {r}", value="*Nenhuma fruta na memória ainda.*", inline=False)
             
+    await ctx.send(embed=emb)
+
+# 6️⃣ COMANDOS: CADASTRAR / REMOVER FRUTAS (Staff)
+def _cortar(texto, limite=1900):
+    return texto if len(texto) <= limite else texto[:limite - 3] + "..."
+
+@bot.command(name="addfruta", aliases=["addfrutas"])
+@commands.check(is_staff)
+async def addfruta(ctx, *, texto: str):
+    """Cadastra frutas na planilha. Ex.: doffy!addfruta S Mera Mera no Mi, Goro Goro no Mi"""
+    itens, erros = parse_lote(texto)
+    if erros or not itens:
+        dica = ("Use: `doffy!addfruta <rank> <fruta>, <fruta>`\n"
+                "Vários ranks: uma linha por rank, ex.:\n```\ndoffy!addfruta S: Fruta 1, Fruta 2\nA: Fruta 3\n```")
+        return await ctx.send(_cortar("⚠️ " + ("\n".join(erros) + "\n" if erros else "Nenhuma fruta informada.\n") + dica))
+    if len(itens) > MAX_FRUTAS_POR_LOTE:
+        return await ctx.send(f"⚠️ Máximo de {MAX_FRUTAS_POR_LOTE} frutas por vez.")
+
+    cog = ctx.bot.get_cog("EstoqueCog")
+    if not cog:
+        return await ctx.send("❌ Erro: Planilha não conectada.")
+    msg = await ctx.send(f"⏳ Cadastrando {len(itens)} fruta(s) na planilha...")
+    try:
+        r = await cog.adicionar_frutas(itens)
+    except (ErroPlanilha, PlanilhaIndisponivel) as e:
+        return await msg.edit(content=_cortar(f"❌ {e}"))
+
+    linhas = []
+    if r["adicionadas"]:
+        linhas.append(f"✅ **{len(r['adicionadas'])} fruta(s) cadastrada(s):**")
+        linhas += [f"• `{f['rank']}#{f['numero']}` {f['nome']}" for f in r["adicionadas"]]
+    if r["duplicadas"]:
+        linhas.append(f"⚠️ **Já existiam (ignoradas):** {', '.join(r['duplicadas'])}")
+    if r["rejeitadas"]:
+        linhas.append("❌ **Rejeitadas:**\n" + "\n".join(f"• {x}" for x in r["rejeitadas"]))
+    await msg.edit(content=_cortar("\n".join(linhas) or "Nada a fazer."))
+
+@bot.command(name="rmfruta", aliases=["removerfruta"])
+@commands.check(is_staff)
+async def rmfruta(ctx, *, busca_fruta: str):
+    """Remove uma fruta da planilha (apaga a linha). Pede confirmação com ✅."""
+    cog = ctx.bot.get_cog("EstoqueCog")
+    if not cog:
+        return await ctx.send("❌ Erro: Planilha não conectada.")
+    try:
+        frutas = (await cog.get_tabela())["frutas"]
+    except PlanilhaIndisponivel as e:
+        print(f"❌ Erro ao ler a planilha: {e}")
+        return await ctx.send("❌ Não consegui ler a planilha agora. Tente de novo em instantes.")
+
+    achadas = buscar_frutas(frutas, busca_fruta)
+    if not achadas:
+        return await ctx.send(f"❌ Não achei nenhuma fruta com `{busca_fruta}`.")
+    if len(achadas) > 1:
+        lista = "\n".join(f"• `{f['rank']}#{f['numero']}` {f['nome']}" for f in achadas[:10])
+        return await ctx.send(_cortar(f"⚠️ Achei {len(achadas)} frutas com `{busca_fruta}`. Seja mais específico (nome completo ou `rank+número`, ex.: `a2`):\n{lista}"))
+
+    alvo = achadas[0]
+    status = f" (status: *{alvo['status']}*)" if alvo["status"] else ""
+    msg = await ctx.send(f"🗑️ Remover **{alvo['nome']}** (`{alvo['rank']}#{alvo['numero']}`){status} da planilha?\n"
+                         f"Reaja com ✅ em até 60s para confirmar.")
+    await msg.add_reaction("✅")
+
+    def check(reaction, user):
+        return user == ctx.author and reaction.message.id == msg.id and str(reaction.emoji) == "✅"
+
+    try:
+        await bot.wait_for("reaction_add", timeout=60.0, check=check)
+    except asyncio.TimeoutError:
+        return await msg.edit(content="⌛ Remoção cancelada (sem confirmação).")
+
+    try:
+        await cog.remover_fruta(alvo["linha"], alvo["nome"])
+    except (ErroPlanilha, PlanilhaIndisponivel) as e:
+        return await msg.edit(content=_cortar(f"❌ {e}"))
+    await msg.edit(content=f"🗑️ **{alvo['nome']}** foi removida da planilha.")
+
+@bot.command(name="diagnostico", aliases=["diag"])
+@commands.check(is_staff)
+async def diagnostico(ctx):
+    """Mostra como o bot está lendo a planilha (ajuda a achar frutas que não aparecem)."""
+    cog = ctx.bot.get_cog("EstoqueCog")
+    if not cog:
+        return await ctx.send("❌ Erro: Planilha não conectada.")
+    try:
+        t = await cog.get_tabela()
+    except PlanilhaIndisponivel as e:
+        return await ctx.send(_cortar(f"❌ Não consegui ler a planilha: {e}"))
+
+    frutas = t["frutas"]
+    aba = getattr(cog.sheet, "title", ABA_PLANILHA)
+    cont = {r: sum(1 for f in frutas if f["rank"] == r) for r in RANKS}
+    invalidas = [f for f in frutas if f["rank"] not in RANKS]
+    sem_nome = [f for f in frutas if not f["nome"]]
+
+    emb = discord.Embed(title="🔎 Diagnóstico da planilha", color=0x3498DB)
+    emb.add_field(name="Origem", value=f"`{NOME_PLANILHA}` › aba `{aba}`\n{t['total']} linhas lidas, cabeçalho na linha {t['idx_head']}", inline=False)
+    emb.add_field(name="Frutas lidas", value=" | ".join(f"{r}: `{n}`" for r, n in cont.items()) + f" | total `{len(frutas)}`", inline=False)
+    if frutas:
+        ult = frutas[-3:]
+        emb.add_field(name="Últimas linhas lidas", value="\n".join(f"L{f['linha']}: `{f['rank'] or '?'}#{f['numero']}` {f['nome'] or '(sem nome)'}" for f in ult), inline=False)
+    if invalidas:
+        emb.add_field(name=f"⚠️ {len(invalidas)} com rank inválido (não aparecem no enc)",
+                      value=_cortar("\n".join(f"L{f['linha']}: rank `{f['rank'] or 'vazio'}` — {f['nome'] or '(sem nome)'}" for f in invalidas[:10]), 1000), inline=False)
+    if sem_nome:
+        emb.add_field(name=f"⚠️ {len(sem_nome)} linha(s) sem nome", value=", ".join(f"L{f['linha']}" for f in sem_nome[:15]), inline=False)
+    if t["acima"]:
+        emb.add_field(name="ℹ️ Linhas com texto ACIMA do cabeçalho (o bot não lê)",
+                      value=_cortar("\n".join(f"L{n}: {' | '.join(c)}"[:120] for n, c in t["acima"][:8]), 1000), inline=False)
     await ctx.send(embed=emb)
 
 # Anexa a configuração segura ao bot

@@ -211,6 +211,7 @@ class TestRegistroDeComandos:
     COMANDOS_ESPERADOS = {
         "ajuda", "anuncio", "cuspir", "darcargo", "editar", "forcarteste", "historico", "ingerir",
         "limpar", "pl", "posse", "proxima", "reenviar", "reroll", "say", "simular",
+        "addfruta", "rmfruta", "diagnostico",   # cadastro/remoção de frutas
         "enc", "fruta", "check_pool",   # EstoqueCog
     }
 

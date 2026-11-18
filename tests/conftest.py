@@ -58,6 +58,17 @@ class FakeSheet:
             self.valores[row - 1].append("")
         self.valores[row - 1][col - 1] = value
 
+    def append_rows(self, values, value_input_option=None, insert_data_option=None, **kw):
+        if self.write_error:
+            raise self.write_error
+        self.appended = getattr(self, "appended", []) + [list(v) for v in values]
+        self.valores.extend([list(v) for v in values])
+
+    def delete_rows(self, start_index, end_index=None):
+        if self.write_error:
+            raise self.write_error
+        del self.valores[start_index - 1:(end_index or start_index)]
+
 
 # --------------------------------------------------------------- discord ---
 def make_role(role_id, name="role"):

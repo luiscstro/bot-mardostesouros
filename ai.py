@@ -67,6 +67,9 @@ class DoffyAI(commands.Cog):
         - Ver histórico das últimas frutas: `doffy!historico`
         - Guardar fruta no cofre de um bando: `doffy!posse <fruta>, <bando>`
         - Tirar dono e devolver pro mercado: `doffy!cuspir <fruta>`
+        - Cadastrar frutas novas na planilha (várias de uma vez): `doffy!addfruta <rank> <fruta>, <fruta>`
+        - Remover uma fruta da planilha: `doffy!rmfruta <fruta>`
+        - Ver como o bot está lendo a planilha: `doffy!diagnostico`
         - Ligar/Desligar anúncios de reset: `doffy!anuncio on/off`
         - Apagar mensagens: `doffy!limpar X`
         - Editar mensagem do bot: `doffy!editar <link>`
