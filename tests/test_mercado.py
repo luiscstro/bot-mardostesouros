@@ -61,11 +61,11 @@ class TestMsgContent:
     ])
     def test_precos_e_emoji_por_rank(self, main_mod, rank, p1, p2, emoji):
         txt = main_mod.get_msg_content(rank, "Fruta")
-        assert f"AKUMAS NO MI ({rank})" in txt and emoji in txt
-        assert f"AKUMA ALEATÓRIA:** {p1}" in txt and f"AKUMA ANUNCIADA:** {p2}" in txt
+        assert f"CATEGORIA {rank}" in txt and emoji in txt
+        assert f"**Preço:** {p1} " in txt and f"**Preço:** {p2} " in txt
 
     def test_nome_da_fruta_no_final(self, main_mod):
-        assert main_mod.get_msg_content("C", "Gomu Gomu no Mi").rstrip().endswith("# Gomu Gomu no Mi")
+        assert "**Akuma da semana:** Gomu Gomu no Mi" in main_mod.get_msg_content("C", "Gomu Gomu no Mi")
 
     def test_rank_desconhecido_usa_valores_padrao(self, main_mod):
         txt = main_mod.get_msg_content("Z", "X")
@@ -80,16 +80,19 @@ class TestMsgContent:
 
     def test_snapshot_estavel(self, main_mod):
         """Protege contra mudança acidental do texto publicado nas lojas."""
-        assert main_mod.get_msg_content("C", "Fruta") == (
-            "# **AKUMAS NO MI (C)** 🍐\n\n"
-            "*Aqui poderá encontrar diversas frutas poderosas.*\n\n"
-            "▶️ **AKUMA ALEATÓRIA:** 30.000.000<:berry:1222990525372563539>\n"
-            "▶️ **AKUMA ANUNCIADA:** 60.000.000<:berry:1222990525372563539>\n\n"
-            "🔸 Ao comprar, só haverá 2 jeitos de descobrir qual Akuma é: ou um Arqueólogo descobre ou um PJ deverá comê-la.\n"
-            "# 🍒 FRUTA ANUNCIADA\n"
-            "🔸 Todo Domingo será feita uma rolagem de Akuma e ficará aqui até a próxima semana.\n"
-            "# Fruta"
+        esperado = (
+            "# __AKUMAS NO MI — CATEGORIA C__ 🍐\n\n"
+            "> *Nas mãos certas, até uma fruta considerada modesta pode destruir reinos inteiros.*\n\n"
+            "🔸 **AKUMA ALEATÓRIA**\n"
+            "> **Preço:** 30.000.000 <:berry:1222990525372563539>\n"
+            "> **Descrição:** *A categoria é conhecida, mas a fruta é sorteada no momento da compra e permanece desconhecida até ser identificada por um Arqueólogo ou consumida.*\n\n"
+            "🔸 **AKUMA ANUNCIADA**\n"
+            "> **Preço:** 60.000.000 <:berry:1222990525372563539>\n"
+            "> **Akuma da semana:** Fruta\n\n"
+            "▶️ Uma nova fruta será anunciada todo domingo e permanecerá disponível até a atualização seguinte.\n\n"
+            "⚠️ Cada tripulação pode comprar no máximo **1 Akuma no Mi por semana** pelo Mercado Clandestino. Compras aleatórias e anunciadas compartilham esse limite."
         )
+        assert main_mod.get_msg_content("C", "Fruta") == esperado
 
 
 # ------------------------------------------------------------- send_chunked ---
@@ -156,8 +159,8 @@ class TestRunUpdate:
         await main_mod.run_update()
         txt_c = m.canais[m.ids["C"]].send.call_args.args[0]
         txt_b = m.canais[m.ids["B"]].send.call_args.args[0]
-        assert "AKUMAS NO MI (C)" in txt_c and ("Fruta C1" in txt_c or "Fruta C2" in txt_c)
-        assert "AKUMAS NO MI (B)" in txt_b and "Fruta B1" in txt_b
+        assert "CATEGORIA C" in txt_c and ("Fruta C1" in txt_c or "Fruta C2" in txt_c)
+        assert "CATEGORIA B" in txt_b and "Fruta B1" in txt_b
 
     async def test_edita_mensagem_existente_em_vez_de_criar(self, main_mod, mercado):
         m = await mercado()
@@ -197,7 +200,7 @@ class TestRunUpdate:
     async def test_rank_sem_frutas_publica_esgotado(self, main_mod, mercado):
         m = await mercado(tabela(("C", 1, "C1", "ocupada"), ("B", 1, "B1", ""), ("A", 1, "A1", "")))
         await main_mod.run_update()
-        assert "# Esgotado" in m.canais[m.ids["C"]].send.call_args.args[0]
+        assert "Akuma da semana:** Esgotado" in m.canais[m.ids["C"]].send.call_args.args[0]
 
     async def test_anuncio_enviado_com_embed_e_mencoes(self, main_mod, mercado):
         m = await mercado()
@@ -224,7 +227,7 @@ class TestRunUpdate:
         m = await mercado()
         main_mod._cache_save_sync({"contador": 0, "agenda": {"C": {"1": "Fruta C2"}, "B": {}, "A": {}}})
         await main_mod.run_update()
-        assert "# Fruta C2" in m.canais[m.ids["C"]].send.call_args.args[0]
+        assert "Akuma da semana:** Fruta C2" in m.canais[m.ids["C"]].send.call_args.args[0]
         assert main_mod._cache_load_sync()["agenda"]["C"] == {}
         assert "Fruta C2" in main_mod.history["C"]
 
