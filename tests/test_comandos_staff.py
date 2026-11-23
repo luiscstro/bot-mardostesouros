@@ -155,7 +155,7 @@ class TestReroll:
     async def test_fruta_explicita_cria_mensagem(self, main_mod, staff_ctx, setup):
         _, ch, msg = await setup()
         await main_mod.reroll.callback(staff_ctx, rank="c", fruta="Mera Mera")   # rank minúsculo
-        assert "# Mera Mera" in ch.send.call_args.args[0]
+        assert "Akuma da semana:** Mera Mera" in ch.send.call_args.args[0]
         assert main_mod.msg_ids["C"] == 7
         staff_ctx.message.add_reaction.assert_awaited_with("✅")
 

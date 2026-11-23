@@ -641,27 +641,33 @@ def sortear_com_historico(rank, lista_disponiveis):
 
 def get_msg_content(rank, nome):
     config = {
-        "C": {"precos": ("30.000.000", "60.000.000"), "emoji": "🍐"},
-        "B": {"precos": ("150.000.000", "300.000.000"), "emoji": "🍇"},
-        "A": {"precos": ("800.000.000", "1.600.000.000"), "emoji": "🍎"}
+        "C": {"precos": ("30.000.000", "60.000.000"), "emoji": "🍐",
+              "frase": "Nas mãos certas, até uma fruta considerada modesta pode destruir reinos inteiros."},
+        "B": {"precos": ("150.000.000", "300.000.000"), "emoji": "🍇",
+              "frase": "Frutas desta categoria transformam novatos promissores em ameaças que o mundo inteiro precisa observar."},
+        "A": {"precos": ("800.000.000", "1.600.000.000"), "emoji": "🍎",
+              "frase": "Frutas desta categoria não criam apenas usuários poderosos. Elas criam nomes que permanecem na história."},
     }
-    
-    dados = config.get(rank, {"precos": ("???", "???"), "emoji": "🍒"})
+
+    dados = config.get(rank, {"precos": ("???", "???"), "emoji": "🍒", "frase": "???"})
     p_rand, p_anunc = dados["precos"]
-    emoji_fruta = dados["emoji"]
     berry = "<:berry:1222990525372563539>"
 
-    return f"""# **AKUMAS NO MI ({rank})** {emoji_fruta}
+    return f"""# __AKUMAS NO MI — CATEGORIA {rank}__ {dados["emoji"]}
 
-*Aqui poderá encontrar diversas frutas poderosas.*
+> *{dados["frase"]}*
 
-▶️ **AKUMA ALEATÓRIA:** {p_rand}{berry}
-▶️ **AKUMA ANUNCIADA:** {p_anunc}{berry}
+🔸 **AKUMA ALEATÓRIA**
+> **Preço:** {p_rand} {berry}
+> **Descrição:** *A categoria é conhecida, mas a fruta é sorteada no momento da compra e permanece desconhecida até ser identificada por um Arqueólogo ou consumida.*
 
-🔸 Ao comprar, só haverá 2 jeitos de descobrir qual Akuma é: ou um Arqueólogo descobre ou um PJ deverá comê-la.
-# 🍒 FRUTA ANUNCIADA
-🔸 Todo Domingo será feita uma rolagem de Akuma e ficará aqui até a próxima semana.
-# {nome}"""
+🔸 **AKUMA ANUNCIADA**
+> **Preço:** {p_anunc} {berry}
+> **Akuma da semana:** {nome}
+
+▶️ Uma nova fruta será anunciada todo domingo e permanecerá disponível até a atualização seguinte.
+
+⚠️ Cada tripulação pode comprar no máximo **1 Akuma no Mi por semana** pelo Mercado Clandestino. Compras aleatórias e anunciadas compartilham esse limite."""
 
 frases = [
     "🦩 Fuffuffuffu... O Mercado Negro tem novidades! [Confira no salão principal](https://discord.com/channels/1220345032079572993/1294114646067904593)",

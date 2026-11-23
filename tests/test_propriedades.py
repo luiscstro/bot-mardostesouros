@@ -79,9 +79,9 @@ class TestSorteio:
 class TestTextos:
     @cfg
     @given(st.text(max_size=300))
-    def test_get_msg_content_sempre_termina_com_o_nome(self, main_mod, nome):
+    def test_get_msg_content_sempre_inclui_o_nome(self, main_mod, nome):
         for rank in ["C", "B", "A", "?"]:
-            assert main_mod.get_msg_content(rank, nome).endswith(f"# {nome}")
+            assert main_mod.get_msg_content(rank, nome).count(nome) >= 1 if nome else True
 
     @cfg
     @given(st.text(max_size=12000), st.integers(1, 2000))
